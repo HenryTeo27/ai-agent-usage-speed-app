@@ -2,7 +2,20 @@ import unittest
 from unittest.mock import patch
 import meter
 
-class SnapshotTests(unittest.TestCase):
+class InvisibleGuiTests(unittest.TestCase):
+    """Exercise real mapped windows without flashing test UI on the desktop."""
+    def setUp(self):
+        meter.load_gui()
+        top_level=meter.tk.Toplevel
+        def transparent_window(*args,**kwargs):
+            window=top_level(*args,**kwargs);window.attributes('-alpha',0)
+            return window
+        for target,name,replacement in ((meter.App,'reveal',lambda app:setattr(app,'_show_job',None)),
+                                         (meter.App,'show',lambda app:app.root.deiconify()),
+                                         (meter.tk,'Toplevel',transparent_window)):
+            patcher=patch.object(target,name,replacement);patcher.start();self.addCleanup(patcher.stop)
+
+class SnapshotTests(InvisibleGuiTests):
     def test_interrupted_replace_keeps_last_snapshot(self):
         import tempfile
         from pathlib import Path
@@ -30,7 +43,40 @@ class SnapshotTests(unittest.TestCase):
             if app.job: app.root.after_cancel(app.job)
             app.root.destroy()
 
-class WindowLifecycleTests(unittest.TestCase):
+class WindowLifecycleTests(InvisibleGuiTests):
+    def test_startup_and_restore_wait_for_reveal(self):
+        with patch.object(meter.App,'setup_tray'),patch.object(meter.App,'refresh'):
+            app=meter.App()
+        try:
+            app.root.update()
+            self.assertEqual(app.root.attributes('-alpha'),0)
+            self.assertTrue(app.body.winfo_children())
+            app.hide();app.root.update();app.show();app.root.update()
+            self.assertEqual(app.root.attributes('-alpha'),0)
+            self.assertTrue(app.body.winfo_children())
+        finally:
+            app.closed=True
+            if app.job: app.root.after_cancel(app.job)
+            app.root.destroy()
+
+    def test_redraw_keeps_previous_frame_until_replacement_is_ready(self):
+        with patch.object(meter.App,'setup_tray'),patch.object(meter.App,'refresh'):
+            app=meter.App()
+        try:
+            app.root.update();previous=app.body
+            with patch.object(app,'draw_content',side_effect=RuntimeError('render failed')):
+                with self.assertRaises(RuntimeError): app.draw()
+            self.assertIs(app.body,previous)
+            self.assertTrue(previous.winfo_exists())
+            self.assertEqual(app.canvas.itemcget(app.body_window,'window'),str(previous))
+            app.draw();app.root.update()
+            self.assertFalse(previous.winfo_exists())
+            self.assertTrue(app.body.winfo_children())
+            self.assertEqual(app.canvas.itemcget(app.body_window,'window'),str(app.body))
+        finally:
+            app.closed=True
+            if app.job: app.root.after_cancel(app.job)
+            app.root.destroy()
     @unittest.skipUnless(meter.os.name=='nt','Windows drag positioning')
     def test_header_drag_moves_multiple_times_and_stops_on_release(self):
         import tempfile
@@ -87,7 +133,7 @@ class WindowLifecycleTests(unittest.TestCase):
             try:
                 for cycle in range(4):
                     app.hide();app.root.update();app.dirty=True
-                    user.ShowWindow(app.window_handle,9);app.root.update()
+                    user.ShowWindow(app.window_handle,4);app.root.update()
                     current=user.GetParent(app.root.winfo_id())
                     self.assertEqual(current,app.window_handle)
                     self.assertEqual(user.GetPropW(current,'CodexMeter.Ready'),1)
@@ -95,6 +141,42 @@ class WindowLifecycleTests(unittest.TestCase):
                     self.assertFalse(app.dirty)
                     self.assertEqual(app.data['usage'],saved['usage'])
                     self.assertTrue(app.body.winfo_children())
+            finally:
+                app.closed=True
+                if app.job: app.root.after_cancel(app.job)
+                app.root.destroy()
+
+class SettingsTests(InvisibleGuiTests):
+    def test_project_link_and_settings_save(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp, patch.object(meter,'CONFIG',Path(tmp)/'settings.json'), patch.object(meter,'SNAPSHOT',Path(tmp)/'snapshot.json'), patch.object(meter.App,'setup_tray'), patch.object(meter.App,'refresh'), patch.object(meter.App,'publish_ready'):
+            app=meter.App()
+            try:
+                app.root.geometry('+100+600');app.root.update()
+                app.settings_dialog();app.root.update()
+                window=app.settings_window
+                app.settings_dialog()
+                self.assertIs(app.settings_window,window)
+                def descendants(widget):
+                    for child in widget.winfo_children():
+                        yield child
+                        yield from descendants(child)
+                widgets=list(descendants(window))
+                labels=[widget for widget in widgets if isinstance(widget,meter.tk.Label)]
+                self.assertIn('Codex Meter · v'+meter.VERSION,[label.cget('text') for label in labels])
+                project=next(label for label in labels if label.cget('text')==meter.REPOSITORY)
+                with patch.object(meter.webbrowser,'open') as browser:
+                    project.event_generate('<Button-1>');app.root.update()
+                    browser.assert_called_once_with(meter.REPOSITORY)
+                self.assertLessEqual(window.winfo_y()+window.winfo_height(),window.winfo_screenheight()-90)
+                interval=next(widget for widget in widgets if isinstance(widget,meter.ttk.Combobox))
+                reserve=next(widget for widget in widgets if isinstance(widget,meter.ttk.Entry) and not isinstance(widget,meter.ttk.Combobox))
+                interval.set('4 hours');reserve.delete(0,'end');reserve.insert(0,'1,234')
+                next(widget for widget in widgets if isinstance(widget,meter.ttk.Button) and widget.cget('text')=='Save').invoke()
+                self.assertEqual(app.settings,{'interval':4,'reserve':1234})
+                self.assertEqual(meter.read(meter.CONFIG,{}),app.settings)
+                self.assertIsNotNone(app.job)
             finally:
                 app.closed=True
                 if app.job: app.root.after_cancel(app.job)
@@ -209,7 +291,7 @@ class SpeedBatchTests(unittest.TestCase):
         self.assertEqual(result['14'][0]['normal'],'10.0')
         meter.sys.modules.pop('_codex_meter_speed',None)
 
-class RefreshTests(unittest.TestCase):
+class RefreshTests(InvisibleGuiTests):
     def test_fast_source_is_shown_before_slow_source(self):
         import tempfile, threading
         from pathlib import Path

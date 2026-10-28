@@ -20,7 +20,8 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.8'
+VERSION = '1.0.9'
+REPOSITORY = 'https://github.com/HenryTeo27/ai-agent-usage-speed-app'
 DEFAULT = {'interval': 6, 'reserve': 600000000}
 CACHED_SPEED = DATA / 'tools' / 'codex_speed.py'
 
@@ -314,11 +315,12 @@ class Tooltip:
 class App:
     def __init__(self):
         load_gui()
-        self.dirty=False
+        self.dirty=False;self._show_job=None
         self.settings={**DEFAULT, **read(CONFIG,{})}; self.data=load_snapshot(); self.busy=False; self.closed=False; self.job=None; self.results=queue.Queue()
         if self.data.get('status','').startswith('Updated '):
             self.data['status']=re.sub(r'\s*·\s*\d+(?:\.\d+)?s(?=\s*·|$)','',self.data['status'])
-        self.root=tk.Tk(); self.root.withdraw(); self.root.title('Codex Meter'); self.root.geometry('480x650'); self.root.minsize(440,610); self.root.configure(bg='#ffffff')
+        self.root=tk.Tk(); self.root.withdraw(); self.root.attributes('-alpha',0)
+        self.root.title('Codex Meter'); self.root.geometry('480x650'); self.root.minsize(440,610); self.root.configure(bg='#ffffff')
         self.root.iconbitmap(str(ROOT/'assets/codex-transparent.ico'))
         self.root.protocol('WM_DELETE_WINDOW',self.hide)
         self.root.bind('<Map>',self.on_map)
@@ -507,7 +509,18 @@ class App:
     def label(self,parent,text,size=10,color='#777b80',font='Segoe UI',bold=False,**kw):
         return tk.Label(parent,text=text,bg=self.bg,fg=color,font=(font,size,'bold' if bold else 'normal'),**kw)
     def draw(self):
-        for x in self.body.winfo_children(): x.destroy()
+        # Build off-screen while the current page stays intact, then swap once.
+        previous=self.body
+        self.body=tk.Frame(self.canvas,bg=self.bg)
+        try: self.draw_content()
+        except Exception:
+            self.body.destroy();self.body=previous
+            raise
+        self.canvas.itemconfigure(self.body_window,window=self.body,width=self.canvas.winfo_width())
+        self.body.bind('<Configure>',lambda event:self.canvas.configure(scrollregion=self.canvas.bbox('all')))
+        previous.destroy()
+
+    def draw_content(self):
         limits=self.data.get('limits',{})
         windows=[x for x in (limits.get('primary'),limits.get('secondary')) if x and x.get('usedPercent') is not None]
         for index,window in enumerate(windows or [None]):
@@ -559,7 +572,8 @@ class App:
         tk.Frame(footer,bg='#e9eaec',height=1).pack(fill='x',pady=(0,12))
         self.label(footer,'Sources & components',9,anchor='w').pack(fill='x')
         self.label(footer,'Checks latest tools on refresh; falls back when unavailable.',8,anchor='w',wraplength=390,justify='left').pack(fill='x',pady=(4,8))
-        for title,url in [
+        components=tk.Frame(footer,bg=self.bg);components.pack(fill='x')
+        for index,(title,url) in enumerate([
             ('codex-speed · speed calculations','https://gist.github.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635'),
             ('ccusage / Codex · tokens & cost','https://github.com/ccusage/ccusage'),
             ('OpenAI Codex · account limits & local logs','https://github.com/openai/codex'),
@@ -568,16 +582,21 @@ class App:
             ('Pillow · icons','https://python-pillow.org/'),
             ('Rich · speed tool formatting','https://github.com/Textualize/rich'),
             ('joblib · speed tool runtime','https://github.com/joblib/joblib'),
-            ('orjson · fast JSON decoding','https://github.com/ijl/orjson'),
-            ('Source code · Codex Meter '+VERSION,'https://github.com/HenryTeo27/ai-agent-usage-speed-app')]:
-            link=self.label(footer,title,8,'#73777b',anchor='w',cursor='hand2')
-            link.pack(fill='x',pady=2); link.bind('<Button-1>',lambda event,address=url:webbrowser.open(address))
+            ('orjson · fast JSON decoding','https://github.com/ijl/orjson')]):
+            link=self.label(components,title,8,'#73777b',anchor='w',cursor='hand2',wraplength=195,justify='left')
+            link.grid(row=index//2,column=index%2,sticky='nw',padx=(0,12),pady=3)
+            link.bind('<Button-1>',lambda event,address=url:webbrowser.open(address))
+        tk.Frame(footer,bg='#e9eaec',height=1).pack(fill='x',pady=(14,12))
+        self.label(footer,'Codex Meter · v'+VERSION,9,anchor='w').pack(fill='x')
+        project=self.label(footer,REPOSITORY,8,'#185c40',anchor='w',cursor='hand2',wraplength=405,justify='left')
+        project.pack(fill='x',pady=(5,7));project.bind('<Button-1>',lambda event:webbrowser.open(REPOSITORY))
+        self.label(footer,'Open source · MIT license. Contributions welcome. Help add token usage, costs and speed for more coding agents and AI agents.',9,anchor='w',wraplength=405,justify='left').pack(fill='x')
     def settings_dialog(self):
         if getattr(self,'settings_window',None) is not None and self.settings_window.winfo_exists():
             self.settings_window.lift();return
-        win=tk.Toplevel(self.root); win.title('Settings'); win.configure(bg=self.bg); win.resizable(False,False); win.transient(self.root)
-        self.settings_window=win; win.grab_set()
-        win.geometry(f'+{max(0, self.root.winfo_rootx()+20)}+{max(0, self.root.winfo_rooty()+50)}')
+        win=tk.Toplevel(self.root);win.withdraw()
+        win.title('Settings'); win.configure(bg=self.bg); win.resizable(False,False); win.transient(self.root)
+        self.settings_window=win
         box=tk.Frame(win,bg=self.bg); box.pack(padx=24,pady=22)
         self.label(box,'Refresh interval',10,anchor='w').grid(row=0,column=0,sticky='w',pady=6)
         v=tk.StringVar(value='Manual' if not self.settings['interval'] else f"{self.settings['interval']} hours")
@@ -607,7 +626,8 @@ class App:
         self.build_sources(sources)
         win.update_idletasks()
         win.geometry(f'+{max(0,min(self.root.winfo_rootx()+20,win.winfo_screenwidth()-win.winfo_reqwidth()))}+'
-                     f'{max(0,min(self.root.winfo_rooty()+50,win.winfo_screenheight()-win.winfo_reqheight()-60))}')
+                     f'{max(0,min(self.root.winfo_rooty()+50,win.winfo_screenheight()-win.winfo_reqheight()-90))}')
+        win.deiconify();win.grab_set()
     def schedule(self):
         if self.job: self.root.after_cancel(self.job); self.job=None
         if self.settings['interval']: self.job=self.root.after(self.settings['interval']*3600000,self.scheduled)
@@ -683,6 +703,11 @@ class App:
             self.configure_window()
             if self.dirty: self.draw();self.dirty=False
             self.publish_ready()
+            if self._show_job is None: self._show_job=self.root.after_idle(self.reveal)
+    def reveal(self):
+        self._show_job=None
+        if not self.closed and self.root.state() in ('normal','zoomed'):
+            self.root.attributes('-alpha',1)
     def render_results(self):
         if self.root.state()=='withdrawn': self.dirty=True
         else: self.draw()
@@ -691,15 +716,18 @@ class App:
         self.tray=pystray.Icon('Codex Meter',im,'Codex Meter',pystray.Menu(pystray.MenuItem('Open',lambda:self.root.after(0,self.show),default=True),pystray.MenuItem('Refresh',lambda:self.root.after(0,self.refresh)),pystray.MenuItem('Quit',lambda:self.root.after(0,self.quit))))
         self.tray.run_detached()
     def hide(self):
+        if self._show_job is not None:
+            self.root.after_cancel(self._show_job);self._show_job=None
         for tooltip in list(Tooltip.instances):
             try:
                 if tooltip.widget.winfo_toplevel() is self.root: tooltip.hide()
             except tk.TclError: pass
         if getattr(self,'settings_window',None) is not None and self.settings_window.winfo_exists(): self.settings_window.destroy()
-        self.root.withdraw()
+        self.root.attributes('-alpha',0);self.root.withdraw()
     def show(self):
         if self.dirty: self.draw(); self.dirty=False
-        self.root.deiconify(); self.root.lift(); self.root.focus_force()
+        if self.root.state() in ('withdrawn','iconic'): self.root.deiconify()
+        self.root.lift(); self.root.focus_force()
     def quit(self):
         self.closed=True
         cancel_scans()
@@ -768,6 +796,7 @@ def start_single_instance():
     user.FindWindowW.argtypes=[wintypes.LPCWSTR,wintypes.LPCWSTR];user.FindWindowW.restype=wintypes.HWND
     user.GetPropW.argtypes=[wintypes.HWND,wintypes.LPCWSTR];user.GetPropW.restype=wintypes.HANDLE
     user.ShowWindow.argtypes=[wintypes.HWND,ctypes.c_int];user.SetForegroundWindow.argtypes=[wintypes.HWND]
+    user.IsWindowVisible.argtypes=[wintypes.HWND];user.IsIconic.argtypes=[wintypes.HWND]
     handle=kernel.CreateMutexW(None,False,'Local\\CodexMeterSingleInstance')
     existed=ctypes.get_last_error()==183
     if not handle: raise ctypes.WinError(ctypes.get_last_error())
@@ -777,7 +806,7 @@ def start_single_instance():
             for attempt in range(160):
                 hwnd=find_ready_window()
                 if hwnd:
-                    user.ShowWindow(hwnd,9)
+                    if not user.IsWindowVisible(hwnd) or user.IsIconic(hwnd): user.ShowWindow(hwnd,9)
                     for restored in range(20):
                         current=find_ready_window()
                         if current:

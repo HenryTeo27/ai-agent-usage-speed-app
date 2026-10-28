@@ -87,6 +87,8 @@ The ZIP is written to `release/`. It contains a folder-based executable bundle, 
 
 Contributions for other coding agents are welcome. The current release supports **Codex only**. Help add your agent's usage and speed so one small app can show multiple platforms together.
 
+Settings shows the installed app version, the GitHub repository link and an invitation to contribute. Codex Meter is open source under the MIT license.
+
 Open an issue or pull request with the agent name, a link to its usage or speed tool, and a small anonymized log or JSON sample. Explain what the tokens, cost and timing values mean. Keep scans local, avoid storing history, handle missing fields, and include parser tests. Never include API keys, login files, chat content or personal logs. Provider data collection should stay separate from UI rendering so more agents can be added without duplicating the window.
 
 
@@ -115,3 +117,7 @@ Each successful usage, limits or speed result is saved before it is displayed. A
 ## Header dragging in v1.0.7
 
 Header dragging follows pointer deltas with non-blocking position updates. It no longer enters the synchronous native caption-move loop. Multiple pending pointer updates are coalesced into one idle update, and releasing the mouse ends the drag. The brand's top spacing is increased by about one third; window-control height is increased from 33 to 40 while remaining flush to the top/right edges.
+
+## Window display in v1.0.9
+
+The main window stays transparent until its first layout and native frame setup are complete. Restoring from the tray uses the same display step. Refresh builds the next page while the current page remains visible, then swaps them once. GUI tests keep their windows transparent so routine checks do not flash test windows on the desktop.
