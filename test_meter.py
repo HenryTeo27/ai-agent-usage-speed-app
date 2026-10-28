@@ -31,6 +31,29 @@ class SnapshotTests(unittest.TestCase):
             app.root.destroy()
 
 class WindowLifecycleTests(unittest.TestCase):
+    @unittest.skipUnless(meter.os.name=='nt','Windows drag positioning')
+    def test_header_drag_moves_multiple_times_and_stops_on_release(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp, patch.object(meter,'SNAPSHOT',Path(tmp)/'snapshot.json'), patch.object(meter.App,'setup_tray'), patch.object(meter.App,'refresh'):
+            app=meter.App();app.root.geometry('+100+100');app.root.update()
+            try:
+                x,y=app.root.winfo_x(),app.root.winfo_y()
+                app.drag_window(SimpleNamespace(x_root=x+50,y_root=y+20))
+                for dx,dy in [(30,20),(90,50),(160,80)]:
+                    app.drag_motion(SimpleNamespace(x_root=x+50+dx,y_root=y+20+dy));app.root.update()
+                    self.assertEqual((app.root.winfo_x(),app.root.winfo_y()),(x+dx,y+dy))
+                app.end_drag()
+                self.assertIsNone(app._drag_origin)
+                self.assertIsNone(app._drag_job)
+                app.drag_motion(SimpleNamespace(x_root=0,y_root=0));app.root.update()
+                self.assertEqual((app.root.winfo_x(),app.root.winfo_y()),(x+160,y+80))
+            finally:
+                app.closed=True
+                if app.job: app.root.after_cancel(app.job)
+                app.root.destroy()
+
     @unittest.skipUnless(meter.os.name=='nt','Native Windows window selection')
     def test_tooltip_is_not_selected_as_main_and_is_closed_on_hide(self):
         import tempfile

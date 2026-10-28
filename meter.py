@@ -20,7 +20,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.6'
+VERSION = '1.0.7'
 DEFAULT = {'interval': 6, 'reserve': 600000000}
 CACHED_SPEED = DATA / 'tools' / 'codex_speed.py'
 
@@ -383,11 +383,48 @@ class App:
             gdi.DeleteObject.argtypes=[wintypes.HANDLE];gdi.DeleteObject(region)
 
     def drag_window(self,event):
+        # Track pointer deltas instead of entering a blocking native caption-move loop.
+        self._drag_origin=(event.x_root,event.y_root,self.root.winfo_x(),self.root.winfo_y())
+        self._drag_target=None
+        self._drag_job=None
+        self._drag_maximized=self.root.state()=='zoomed'
+        self._drag_fraction=(event.x_root-self.root.winfo_rootx())/max(1,self.root.winfo_width())
+        self._drag_header_offset=min(event.y_root-self.root.winfo_rooty(),40)
+
+    def drag_motion(self,event):
+        origin=getattr(self,'_drag_origin',None)
+        if origin is None: return
+        dx=event.x_root-origin[0];dy=event.y_root-origin[1]
+        if self._drag_maximized:
+            if abs(dx)+abs(dy)<4: return
+            self.root.state('normal');self.root.update_idletasks()
+            x=round(event.x_root-self._drag_fraction*self.root.winfo_width())
+            y=event.y_root-self._drag_header_offset
+            self._drag_origin=(event.x_root,event.y_root,x,y)
+            self._drag_maximized=False
+        else: x,y=origin[2]+dx,origin[3]+dy
+        self._drag_target=(x,y)
+        if self._drag_job is None: self._drag_job=self.root.after_idle(self.apply_drag)
+
+    def apply_drag(self):
+        self._drag_job=None
+        target=getattr(self,'_drag_target',None)
+        if target is None: return
         if os.name=='nt':
             import ctypes
+            from ctypes import wintypes
             user=ctypes.windll.user32
-            user.ReleaseCapture()
-            user.SendMessageW(self.window_handle,0xA1,2,0)
+            user.GetParent.argtypes=[wintypes.HWND];user.GetParent.restype=wintypes.HWND
+            user.SetWindowPos.argtypes=[wintypes.HWND,wintypes.HWND,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,wintypes.UINT]
+            user.SetWindowPos(user.GetParent(self.root.winfo_id()),None,target[0],target[1],0,0,0x15)
+        else: self.root.geometry(f'+{target[0]}+{target[1]}')
+        self._drag_target=None
+
+    def end_drag(self,event=None):
+        job=getattr(self,'_drag_job',None)
+        if job is not None: self.root.after_cancel(job)
+        self.apply_drag()
+        self._drag_origin=None
 
     def toggle_maximize(self):
         self.root.state('normal' if self.root.state()=='zoomed' else 'zoomed')
@@ -430,12 +467,14 @@ class App:
         controls=tk.Frame(head,bg=bg);controls.pack(side='right',anchor='n')
         for kind,cmd,tip in [('close',self.hide,'Hide to tray'),('maximize',self.toggle_maximize,'Maximize / restore'),('minimize',self.root.iconify,'Minimize')]:
             self.window_button(controls,kind,cmd,tip).pack(side='right')
-        brand=tk.Frame(head,bg=bg);brand.pack(side='left',padx=20,pady=(12,0))
+        brand=tk.Frame(head,bg=bg);brand.pack(side='left',padx=20,pady=(16,0))
         self.logo=ImageTk.PhotoImage(load_icon(32).resize((28,28),Image.Resampling.LANCZOS),master=self.root)
         logo=tk.Label(brand,image=self.logo,bg=bg);logo.pack(side='left')
         name=tk.Label(brand,text='Codex',font=('Segoe UI',11),fg='#222426',bg=bg);name.pack(side='left',padx=9)
         for widget in (head,brand,logo,name):
             widget.bind('<ButtonPress-1>',self.drag_window)
+            widget.bind('<B1-Motion>',self.drag_motion)
+            widget.bind('<ButtonRelease-1>',self.end_drag)
             widget.bind('<Double-Button-1>',lambda event:self.toggle_maximize())
         holder=tk.Frame(self.root,bg=bg); holder.pack(fill='both',expand=True,padx=20)
         self.canvas=tk.Canvas(holder,bg=bg,highlightthickness=0,bd=0)
@@ -451,7 +490,7 @@ class App:
         self.status_detail=self.data.get('details','')
     def window_button(self,parent,kind,command,tip):
         scale=max(1,float(self.root.tk.call('tk','scaling'))/(96/72))
-        width,height=round(38*scale),round(33*scale)
+        width,height=round(38*scale),round(40*scale)
         button=tk.Canvas(parent,width=width,height=height,bg=self.bg,bd=0,highlightthickness=0,cursor='arrow',takefocus=True)
         glyph={'close':'\ue8bb','minimize':'\ue921','maximize':'\ue922'}[kind]
         button.create_text(width/2,height/2,text=glyph,font=('Segoe MDL2 Assets',9),fill='#42474b',anchor='center',tags='icon')

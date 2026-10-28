@@ -107,3 +107,7 @@ Workers skip GUI libraries. Small ICO frames replace the full-size tray bitmap. 
 The window is built from the saved snapshot before it becomes visible. Opening the desktop shortcut restores an already-ready instance instead of exposing a partially built page. The title-strip customization uses native Windows styles and does not install Python window-procedure callbacks. Desktop reopening locates the marked main window rather than matching its title, so a tooltip cannot be mistaken for the app. Tooltips are cleared when hiding to the tray.
 
 Each successful usage, limits or speed result is saved before it is displayed. All results replace the same `snapshot.json`; no refresh history is kept. Writes flush to disk and atomically replace the file, so an interrupted replacement leaves the previous valid snapshot intact. Failed sources keep their previous results. Opening a cached version after an upgrade does not require a new scan.
+
+## Header dragging in v1.0.7
+
+Header dragging follows pointer deltas with non-blocking position updates. It no longer enters the synchronous native caption-move loop. Multiple pending pointer updates are coalesced into one idle update, and releasing the mouse ends the drag. The brand's top spacing is increased by about one third; window-control height is increased from 33 to 40 while remaining flush to the top/right edges.
