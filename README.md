@@ -96,3 +96,9 @@ Original code: [MIT](LICENSE). Third-party components retain their own licenses;
 v1.0.1 fixes an HTTPS startup failure in packages built from a Codex Python runtime: the runtime requires an adjacent certificate data file, which is now included. TLS verification remains enabled, and the packaged smoke test creates a verified SSL context.
 
 A tool-update fallback means current logs were scanned with an older working tool; it does not mean the displayed scan failed. A failed data source is reported as **Partial refresh**, keeps its previous value, and exposes the error on hover. Network access and log size affect timing. With several gigabytes of logs, a full ccusage scan can take longer than a speed scan.
+
+## Resource use in v1.0.2
+
+A 20-second visible-window spot check used about **43 MiB working set / 23 MiB private memory**, down from about 64 / 40 MiB in v1.0.1. Hidden in the tray, the sample used about 41 / 23 MiB with no measurable CPU-time increase over 20 seconds. These are measurements on one computer, not fixed resource limits or a power-draw guarantee.
+
+Workers skip GUI libraries. Small ICO frames replace the full-size tray bitmap. Hidden windows defer redraws, refresh polling stops between scans, and quitting terminates owned scan commands and their children. External ccusage and speed parsing still use CPU, disk and more memory during refresh. See [measurement details and reproduction steps](docs/performance.md).

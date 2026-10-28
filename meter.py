@@ -1,25 +1,15 @@
 import queue
-import contextlib, io, runpy, webbrowser
+import contextlib, io, webbrowser
 import importlib.util
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import timedelta, timezone
 from types import SimpleNamespace
-import sys, os, json, subprocess, threading, tempfile, urllib.request, ast, re, time, shutil
+import sys, os, json, subprocess, threading, tempfile, re, time, shutil
 from pathlib import Path
 from datetime import datetime
-# Opt in before creating a Tk window so Windows does not bitmap-scale the UI.
-if os.name == 'nt':
-    import ctypes
-    try: ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
-    except (AttributeError, OSError): pass
-import tkinter as tk
-from tkinter import ttk, messagebox
-
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 sys.path.insert(0, str(ROOT / 'vendor'))
 sys.path.insert(0, str(ROOT / 'build_vendor'))
-import pystray
-from PIL import Image, ImageTk
 
 DATA = Path(os.environ['LOCALAPPDATA']) / 'CodexMeter'
 CONFIG = DATA / 'settings.json'
@@ -29,9 +19,50 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.1'
+VERSION = '1.0.2'
 DEFAULT = {'interval': 6, 'reserve': 600000000}
 CACHED_SPEED = DATA / 'tools' / 'codex_speed.py'
+
+ACTIVE_PROCESSES = set()
+PROCESS_LOCK = threading.Lock()
+STOP_EVENT = threading.Event()
+
+
+def load_gui():
+    """Workers and second-instance launchers do not load the desktop libraries."""
+    global tk, ttk, messagebox, pystray, Image, ImageTk
+    if 'tk' in globals(): return
+    if os.name == 'nt':
+        import ctypes
+        try: ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        except (AttributeError, OSError): pass
+    import tkinter as tk
+    from tkinter import ttk, messagebox
+    import pystray
+    from PIL import Image, ImageTk
+
+
+def load_icon(size):
+    # Decode only the small ICO frame, not the full-resolution PNG.
+    with Image.open(ROOT/'assets/codex-transparent.ico') as icon:
+        return icon.ico.getimage((size,size)).convert('RGBA')
+
+
+def terminate_process(process):
+    if process.poll() is not None: return
+    if os.name == 'nt':
+        subprocess.run(['taskkill','/PID',str(process.pid),'/T','/F'],capture_output=True,
+                       creationflags=CREATE,timeout=10)
+    else: process.kill()
+
+
+def cancel_scans():
+    STOP_EVENT.set()
+    with PROCESS_LOCK: processes=list(ACTIVE_PROCESSES)
+    for process in processes:
+        try: terminate_process(process)
+        except (OSError,subprocess.TimeoutExpired): pass
+
 
 def read(path, fallback):
     try: return json.loads(path.read_text(encoding='utf-8'))
@@ -44,21 +75,22 @@ def save(path, data):
     temp.replace(path)
 
 def run(args, timeout=180, env=None):
-    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               text=True, encoding='utf-8', errors='replace', env=env,
-                               creationflags=CREATE)
+    with PROCESS_LOCK:
+        if STOP_EVENT.is_set(): raise RuntimeError('Refresh cancelled')
+        process=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                                 text=True,encoding='utf-8',errors='replace',env=env,
+                                 creationflags=CREATE)
+        ACTIVE_PROCESSES.add(process)
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        # npx and joblib spawn children; terminate the complete command tree.
-        if os.name == 'nt':
-            subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
-                           capture_output=True, creationflags=CREATE, timeout=10)
-        else: process.kill()
-        process.communicate(timeout=10)
-        raise RuntimeError(f'Scan timed out after {timeout}s')
-    if process.returncode: raise RuntimeError((stderr or stdout or 'Command failed')[-500:])
-    return stdout
+        try: stdout,stderr=process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            terminate_process(process)
+            process.communicate(timeout=10)
+            raise RuntimeError(f'Scan timed out after {timeout}s')
+        if process.returncode: raise RuntimeError((stderr or stdout or 'Command failed')[-500:])
+        return stdout
+    finally:
+        with PROCESS_LOCK: ACTIVE_PROCESSES.discard(process)
 
 def limits_worker():
     p = subprocess.Popen([find_codex(), 'app-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', creationflags=CREATE)
@@ -121,13 +153,19 @@ def parse_speed(raw):
     return result
 
 def get_speed():
-    env=os.environ.copy(); env['PYTHONPATH']=os.pathsep.join([str(ROOT/'vendor'),str(ROOT/'build_vendor'),str(VENDOR)]); env['PYTHONIOENCODING']='utf-8'; env['COLUMNS']='140'; env['NO_COLOR']='1'
+    with tempfile.TemporaryDirectory(prefix='codex-meter-speed-') as tmp:
+        value=worker_call('--speed-all',[],Path(tmp)/'result.json',145)
+        return value[0],value[1]
+
+
+def scan_speed():
+    import urllib.request, ast
     note=''
     with tempfile.TemporaryDirectory(prefix='codex-meter-') as tmp:
         folder=Path(tmp); candidate=folder/'codex_speed.py'
         try:
             with urllib.request.urlopen(UPSTREAM, timeout=12) as response: content=response.read(2_000_000)
-            source=content.decode('utf-8'); ast.parse(source)
+            source=content.decode('utf-8')
             if 'Selected history' not in source or 'samples.csv.gz' not in source: raise ValueError('Unexpected upstream script')
             # Upstream currently assumes Linux /etc/localtime. Apply the same
             # Windows timezone fallback as the user's installed script.
@@ -144,7 +182,7 @@ def get_speed():
             if not candidate.exists(): raise RuntimeError('First speed scan needs internet to download codex-speed')
             note='Speed update unavailable; using last available copy'
         def scan(script):
-            return worker_call('--speed-batch',[str(script)],folder/'result.json',120,env)
+            return speed_batch(script)
         try: output=scan(candidate)
         except Exception:
             fallback=CACHED_SPEED if CACHED_SPEED.exists() else SPEED
@@ -153,7 +191,8 @@ def get_speed():
         else:
             if candidate != CACHED_SPEED and candidate != SPEED:
                 CACHED_SPEED.parent.mkdir(parents=True,exist_ok=True)
-                shutil.copyfile(candidate,CACHED_SPEED)
+                if not CACHED_SPEED.exists() or CACHED_SPEED.read_bytes()!=candidate.read_bytes():
+                    shutil.copyfile(candidate,CACHED_SPEED)
         return output,note
 
 def speed_batch(script):
@@ -187,8 +226,9 @@ def speed_batch(script):
             output[str(days)]=[]
             continue
         buffer=io.StringIO()
+        from rich.console import Console
         with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
-            engine.print_report(engine.build_report(selected,totals,100,tz),selected,tz,granularity='summary')
+            engine.print_report(engine.build_report(selected,totals,100,tz),selected,tz,granularity='summary',console=Console(file=buffer,width=140,highlight=False))
         output[str(days)]=parse_speed(buffer.getvalue())
     return output
 
@@ -235,12 +275,16 @@ class Tooltip:
 
 class App:
     def __init__(self):
+        load_gui()
+        self.dirty=False
         self.settings={**DEFAULT, **read(CONFIG,{})}; self.data=read(SNAPSHOT,{}); self.busy=False; self.closed=False; self.job=None; self.results=queue.Queue()
         self.root=tk.Tk(); self.root.title('Codex Meter'); self.root.geometry('480x650'); self.root.minsize(440,610); self.root.configure(bg='#ffffff')
         self.root.iconbitmap(str(ROOT/'assets/codex-transparent.ico'))
         self.root.after_idle(self.set_native_icons)
         self.root.protocol('WM_DELETE_WINDOW',self.hide)
+        self.root.bind('<Map>',self.on_map)
         self.build(); self.draw(); self.setup_tray(); self.schedule()
+        if '--start-hidden' in sys.argv: self.hide()
         # A recent snapshot can be shown immediately without another full scan.
         age = time.time() - self.data.get('last_refresh_at', SNAPSHOT.stat().st_mtime if SNAPSHOT.exists() else 0)
         if not self.data or self.data.get('app_version') != VERSION or (self.settings['interval'] and age >= self.settings['interval']*3600): self.refresh()
@@ -271,7 +315,7 @@ class App:
     def build(self):
         bg='#ffffff'; self.bg=bg
         head=tk.Frame(self.root,bg=bg); head.pack(fill='x',padx=20,pady=(8,8))
-        self.logo=ImageTk.PhotoImage(Image.open(ROOT/'assets/codex-transparent.png').resize((28,28),Image.Resampling.LANCZOS))
+        self.logo=ImageTk.PhotoImage(load_icon(32).resize((28,28),Image.Resampling.LANCZOS),master=self.root)
         tk.Label(head,image=self.logo,bg=bg).pack(side='left')
         tk.Label(head,text='Codex',font=('Segoe UI',11),fg='#222426',bg=bg).pack(side='left',padx=9)
         for text,cmd,tip in [('⚙',self.settings_dialog,'Settings'),('↻',self.refresh,'Refresh')]:
@@ -378,7 +422,7 @@ class App:
         self.refresh_errors=[]; self.refresh_notes=[]; self.refresh_timings={}
         self.status.config(text='Refreshing…')
         threading.Thread(target=self.collect,daemon=True).start()
-        self.root.after(100,self.check_results)
+        self.root.after(500,self.check_results)
     def collect(self):
         def scan(name,fn):
             started=time.monotonic()
@@ -401,13 +445,15 @@ class App:
                 self.data[name]=value
                 self.data.setdefault('updated_at',{})[name]=time.time()
                 # Display each source immediately instead of waiting for the slowest one.
-                self.draw()
+                self.render_results()
             if not self.pending:
                 self.finish()
                 return
         waiting=', '.join(sorted(self.pending))
-        self.status.config(text=f'Refreshing {waiting} · {time.monotonic()-self.refresh_started:.0f}s')
-        self.root.after(100,self.check_results)
+        if self.root.state()!='withdrawn':
+            text=f'Refreshing {waiting} · {time.monotonic()-self.refresh_started:.0f}s'
+            if self.status.cget('text')!=text: self.status.config(text=text)
+        self.root.after(1000 if self.root.state()=='withdrawn' else 500,self.check_results)
     def finish(self):
         if self.closed: return
         seconds=time.monotonic()-self.refresh_started
@@ -422,17 +468,30 @@ class App:
         except Exception as exc: self.data['status']='Could not save latest result'; self.data['details']=str(exc)
         finally:
             self.busy=False; self.schedule()
-        self.draw()
+        self.status.config(text=self.data.get('status','Ready'))
+        self.render_results()
+    def on_map(self,event):
+        if event.widget is self.root and self.dirty:
+            self.draw(); self.dirty=False
+    def render_results(self):
+        if self.root.state()=='withdrawn': self.dirty=True
+        else: self.draw()
     def setup_tray(self):
-        im=Image.open(ROOT/'assets/codex-transparent.png').convert('RGBA')
+        im=load_icon(32)
         self.tray=pystray.Icon('Codex Meter',im,'Codex Meter',pystray.Menu(pystray.MenuItem('Open',lambda:self.root.after(0,self.show),default=True),pystray.MenuItem('Refresh',lambda:self.root.after(0,self.refresh)),pystray.MenuItem('Quit',lambda:self.root.after(0,self.quit))))
         self.tray.run_detached()
     def hide(self): self.root.withdraw()
-    def show(self): self.root.deiconify(); self.root.lift(); self.root.focus_force()
-    def quit(self): self.closed=True; self.tray.stop(); self.root.destroy()
+    def show(self):
+        if self.dirty: self.draw(); self.dirty=False
+        self.root.deiconify(); self.root.lift(); self.root.focus_force()
+    def quit(self):
+        self.closed=True
+        cancel_scans()
+        self.tray.stop(); self.root.destroy()
     def run(self): self.root.mainloop()
 
 def worker_main():
+    import runpy
     args=sys.argv[1:]
     output_index=args.index('--worker-output')
     output=Path(args[output_index+1]); del args[output_index:output_index+2]
@@ -452,6 +511,7 @@ def worker_main():
                 futures=[pool.submit(measure,name,fn) for name,fn in [('usage',get_usage),('limits',get_limits),('speed',get_speed)]]
                 for future in as_completed(futures):
                     name,result=future.result(); value[name]=result
+        elif args[0]=='--speed-all': value=scan_speed()
         elif args[0]=='--speed-batch': value=speed_batch(args[1])
         else:
             script=args[1]; sys.argv=[script]+args[2:]

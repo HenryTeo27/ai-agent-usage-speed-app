@@ -24,3 +24,11 @@ Only the latest snapshot and settings are retained, plus the working speed scrip
 - Distinguish successful data refresh with tool fallback from a failed source. Expose current failure details on hover.
 - Validate the packaged executable against real data, not only mocked source tests. Recorded diagnostic times: limits 2.78s, speed 18.36s, usage 42.59s. Times depend on the logs and network.
 - On the first launch after a version change, refresh once to verify and replace previous results.
+
+## v1.0.2 resource optimization
+
+- Lazy GUI imports for worker and duplicate launches; small ICO images for tray/header.
+- One isolated speed worker; defer hidden redraws and reduce active-only polling.
+- Track and terminate owned scan process trees on quit.
+- Verified successful real packaged scans, hidden restoration and 10 regression tests.
+- Recorded visible/tray idle samples and sampled refresh-tree resource use in docs/performance.md. No hardware power measurement was performed.

@@ -2,6 +2,38 @@ import unittest
 from unittest.mock import patch
 import meter
 
+class ResourceTests(unittest.TestCase):
+    def test_worker_import_does_not_load_gui(self):
+        code="import meter,sys; assert not {'tkinter','pystray','PIL.ImageTk'}.intersection(sys.modules)"
+        meter.run([meter.PYTHON,'-c',code],timeout=10)
+
+    @unittest.skipUnless(meter.os.name=='nt','Windows process-tree cancellation')
+    def test_quit_cancels_owned_child_tree(self):
+        import tempfile,threading
+        from pathlib import Path
+        failures=[]
+        with tempfile.TemporaryDirectory() as tmp:
+            child_file=Path(tmp)/'child.txt'
+            code="import subprocess,sys,time,pathlib; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); pathlib.Path(sys.argv[1]).write_text(str(p.pid)); time.sleep(30)"
+            def work():
+                try: meter.run([meter.PYTHON,'-c',code,str(child_file)],timeout=35)
+                except RuntimeError as exc: failures.append(str(exc))
+            thread=threading.Thread(target=work)
+            try:
+                thread.start()
+                deadline=meter.time.monotonic()+5
+                while not child_file.exists() and meter.time.monotonic()<deadline: meter.time.sleep(0.02)
+                self.assertTrue(child_file.exists())
+                child_pid=int(child_file.read_text())
+                meter.cancel_scans();thread.join(5)
+                self.assertFalse(thread.is_alive())
+                self.assertTrue(failures)
+                result=meter.subprocess.run(['tasklist','/FI',f'PID eq {child_pid}','/FO','CSV','/NH'],capture_output=True,text=True)
+                self.assertNotIn(f'"{child_pid}"',result.stdout)
+                self.assertFalse(meter.ACTIVE_PROCESSES)
+            finally:
+                meter.cancel_scans();thread.join(5);meter.STOP_EVENT.clear()
+
 class ParserTests(unittest.TestCase):
     def test_speed_table(self):
         text = 'Selected history\nModel Normal eff Fast eff Fast÷Norm Normal n Fast n\ngpt-x 23.4 20.1 (0.86×) 12 100\ngpt-y 42.0~ · · 15 ·\n\nOther section\n'
@@ -92,6 +124,7 @@ class RefreshTests(unittest.TestCase):
                 app.root.update()
                 meter.time.sleep(0.01)
             self.assertFalse(app.busy)
+            self.assertTrue(app.dirty)
             self.assertNotIn('Reading',app.status.cget('text'))
             if fail:
                 self.assertEqual(app.data['usage'],previous)
