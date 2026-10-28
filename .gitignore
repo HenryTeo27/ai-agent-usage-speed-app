@@ -1,0 +1,10 @@
+__pycache__/
+vendor/
+build_vendor/
+*.pyc
+build/
+dist/
+release/
+*.spec
+.env
+.env.*
