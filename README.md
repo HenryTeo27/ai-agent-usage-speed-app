@@ -6,13 +6,12 @@ A small Windows desktop meter for Codex usage and speed. Close it to the notific
 
 *App screenshot with synthetic demo data. The latest layout removes the title bar, uses rounded corners, and places Refresh / Settings beside the remaining allowance. Source credits are in Settings.*
 
-## Quick install / 快速安装
+## Quick install
 
 1. Download **[Codex-Meter-Windows-x64.zip](https://github.com/HenryTeo27/ai-agent-usage-speed-app/releases/latest/download/Codex-Meter-Windows-x64.zip)** from [Releases](https://github.com/HenryTeo27/ai-agent-usage-speed-app/releases/latest).
 2. Extract the ZIP, then double-click **Install.cmd**. No administrator access or Python installation is needed.
 3. Open **Codex Meter** on your desktop. The installer also adds it to the Start menu.
 
-下载 ZIP → 解压 → 双击 `Install.cmd` → 从桌面打开 **Codex Meter**。
 
 **Requires Windows 10/11 x64, Node.js 22+ with npm, and Codex installed and signed in.** Restart the app after installing Node.js so it can find `npx`. Codex Desktop's bundled CLI is detected when it is not on PATH. This app uses your local Codex logs; it cannot recover activity from other computers or deleted logs.
 
@@ -65,7 +64,7 @@ Each refresh asks npm for the latest ccusage and downloads the latest upstream c
 
 The app retains settings, one latest snapshot, and one working speed-tool script. It does not keep a scan history or copy chat content. Speed CSVs and parse caches are temporary and deleted after scans. Existing Codex logs are read in place. npm maintains its normal package cache. No telemetry or chat upload is implemented. npm, the speed download and ccusage pricing resolution may access the network; the Codex account query uses Codex's existing sign-in.
 
-The app sleeps between scans. Usage, limits and speed run concurrently outside the UI thread, and each source appears as soon as it completes. The speed worker parses recent logs once for both windows; orjson accelerates JSON decoding while codex-speed still computes the statistics. No persistent sample cache is written. Each scan still reads local logs and briefly uses CPU, disk and memory; large log collections can take longer. The status shows pending sources and elapsed time. Completed refreshes show an update time and duration. Hover over the status for any source errors or tool-update fallback details. Commands have timeouts. Failed sources retain their previous values and show a status message. This release is unsigned; Windows may identify the download as an unrecognized app.
+The app sleeps between scans. Usage, limits and speed run concurrently outside the UI thread, and each source appears as soon as it completes. The speed worker parses recent logs once for both windows; orjson accelerates JSON decoding while codex-speed still computes the statistics. No persistent sample cache is written. Each scan still reads local logs and briefly uses CPU, disk and memory; large log collections can take longer. The status shows pending sources and elapsed time. Completed refreshes show only the update time. Elapsed seconds appear only while a refresh is running. Hover over the status for any source errors or tool-update fallback details. Commands have timeouts. Failed sources retain their previous values and show a status message. This release is unsigned; Windows may identify the download as an unrecognized app.
 
 ## Development and build
 
@@ -86,7 +85,6 @@ Contributions for other coding agents are welcome. The current release supports 
 
 Open an issue or pull request with the agent name, a link to its usage or speed tool, and a small anonymized log or JSON sample. Explain what the tokens, cost and timing values mean. Keep scans local, avoid storing history, handle missing fields, and include parser tests. Never include API keys, login files, chat content or personal logs. Provider data collection should stay separate from UI rendering so more agents can be added without duplicating the window.
 
-欢迎使用其他 coding agent 的用户贡献 usage 和 speed 支持。当前只支持 Codex；你可以提交 issue 或 PR，说明使用的 agent、统计工具和数据格式，一起把它扩展成多平台的小型 meter。
 
 ## License and credits
 

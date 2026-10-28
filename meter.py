@@ -19,7 +19,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.4'
+VERSION = '1.0.5'
 DEFAULT = {'interval': 6, 'reserve': 600000000}
 CACHED_SPEED = DATA / 'tools' / 'codex_speed.py'
 
@@ -297,6 +297,8 @@ class App:
         load_gui()
         self.dirty=False
         self.settings={**DEFAULT, **read(CONFIG,{})}; self.data=read(SNAPSHOT,{}); self.busy=False; self.closed=False; self.job=None; self.results=queue.Queue()
+        if self.data.get('status','').startswith('Updated '):
+            self.data['status']=re.sub(r'\s*·\s*\d+(?:\.\d+)?s(?=\s*·|$)','',self.data['status'])
         self.root=tk.Tk(); self.root.title('Codex Meter'); self.root.geometry('480x650'); self.root.minsize(440,610); self.root.configure(bg='#ffffff')
         self.root.iconbitmap(str(ROOT/'assets/codex-transparent.ico'))
         self.root.after_idle(self.configure_window)
@@ -613,8 +615,7 @@ class App:
         self.root.after(1000 if self.root.state()=='withdrawn' else 500,self.check_results)
     def finish(self):
         if self.closed: return
-        seconds=time.monotonic()-self.refresh_started
-        updated='Updated '+datetime.now().strftime('%H:%M')+f' · {seconds:.1f}s'
+        updated='Updated '+datetime.now().strftime('%H:%M')
         details=self.refresh_errors+self.refresh_notes
         self.data['status']=(updated+(' · tool fallback' if self.refresh_notes else '')) if not self.refresh_errors else 'Partial refresh · '+', '.join(error.split(':')[0] for error in self.refresh_errors)+' failed'
         self.data['details']='\n'.join(details)

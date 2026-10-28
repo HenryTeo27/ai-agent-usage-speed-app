@@ -28,7 +28,7 @@ app.data = {
         '14': rows([('gpt-6.1-sol', '33.6', '52.1', '1.55×'),
                     ('gpt-6-astra', '24.9', '32.5', '1.31×'),
                     ('gpt-6-luna', '71.4', '68.5', '0.96×')])},
-    'status': 'Demo data',
+    'status': 'Updated 10:42',
 }
 app.root.title('Codex Meter Preview')
 app.root.geometry('+480+100')

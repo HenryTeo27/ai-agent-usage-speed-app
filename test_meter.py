@@ -162,7 +162,7 @@ class RefreshTests(unittest.TestCase):
                 self.assertIn('Partial refresh',app.status.cget('text'))
             else:
                 self.assertEqual(app.data['delta'],25)
-                self.assertTrue(app.status.cget('text').startswith('Updated'))
+                self.assertRegex(app.status.cget('text'),r'^Updated \d{2}:\d{2}$')
         app.closed=True
         if app.job: app.root.after_cancel(app.job)
         app.root.destroy()
