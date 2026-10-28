@@ -5,7 +5,8 @@ New-Item -ItemType Directory -Path $folder | Out-Null
 $script = Join-Path $folder 'smoke.py'
 @'
 import argparse, csv, dataclasses, gzip, statistics, zoneinfo
-import joblib, rich, tzdata
+import joblib, rich, tzdata, orjson, ssl
+ssl.create_default_context()
 from rich.console import Console
 Console().print('runtime-ready')
 '@ | Set-Content -Encoding utf8 $script

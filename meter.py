@@ -1,5 +1,9 @@
 import queue
 import contextlib, io, runpy, webbrowser
+import importlib.util
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import timedelta, timezone
+from types import SimpleNamespace
 import sys, os, json, subprocess, threading, tempfile, urllib.request, ast, re, time, shutil
 from pathlib import Path
 from datetime import datetime
@@ -13,6 +17,7 @@ from tkinter import ttk, messagebox
 
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 sys.path.insert(0, str(ROOT / 'vendor'))
+sys.path.insert(0, str(ROOT / 'build_vendor'))
 import pystray
 from PIL import Image, ImageTk
 
@@ -24,7 +29,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.0'
+VERSION = '1.0.1'
 DEFAULT = {'interval': 6, 'reserve': 600000000}
 CACHED_SPEED = DATA / 'tools' / 'codex_speed.py'
 
@@ -139,11 +144,7 @@ def get_speed():
             if not candidate.exists(): raise RuntimeError('First speed scan needs internet to download codex-speed')
             note='Speed update unavailable; using last available copy'
         def scan(script):
-            output={}
-            for days in (14,1):
-                raw=worker_call('--speed-worker',[str(script),'--days',str(days),'--granularity','summary','--min-output','100','--workers','1','--out',str(folder/'out'),'--cache-dir',str(folder/'cache')],folder/'result.json',120,env)
-                output[str(days)]=parse_speed(raw)
-            return output
+            return worker_call('--speed-batch',[str(script)],folder/'result.json',120,env)
         try: output=scan(candidate)
         except Exception:
             fallback=CACHED_SPEED if CACHED_SPEED.exists() else SPEED
@@ -154,6 +155,43 @@ def get_speed():
                 CACHED_SPEED.parent.mkdir(parents=True,exist_ok=True)
                 shutil.copyfile(candidate,CACHED_SPEED)
         return output,note
+
+def speed_batch(script):
+    spec=importlib.util.spec_from_file_location('_codex_meter_speed',script)
+    engine=importlib.util.module_from_spec(spec)
+    sys.modules[spec.name]=engine
+    spec.loader.exec_module(engine)
+    # Only JSON decoding changes; parsing and statistics remain upstream code.
+    import orjson
+    engine.json=SimpleNamespace(loads=orjson.loads,dumps=json.dumps,JSONDecodeError=orjson.JSONDecodeError)
+    now=datetime.now(timezone.utc)
+    home=Path(os.environ.get('CODEX_HOME') or Path.home()/'.codex')
+    original_find=engine.find_rollouts
+    def recent_rollouts(home,*args,**kwargs):
+        result=[]
+        for path in original_find(home):
+            try:
+                if path.stat().st_mtime >= (now-timedelta(days=14)).timestamp(): result.append(path)
+            except OSError: result.append(path)
+        return result
+    engine.find_rollouts=recent_rollouts
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        samples,totals=engine.load_samples(home,None,1)
+    if totals.get('unreadable_files'): raise RuntimeError(f"Cannot read {totals['unreadable_files']} Codex log files")
+    tz=datetime.now().astimezone().tzinfo or timezone.utc
+    output={}
+    for days in (1,14):
+        cutoff=now-timedelta(days=days)
+        selected=[sample for sample in samples if datetime.fromisoformat(sample.completed_at)>=cutoff and sample.output_tokens>=100]
+        if not selected:
+            output[str(days)]=[]
+            continue
+        buffer=io.StringIO()
+        with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+            engine.print_report(engine.build_report(selected,totals,100,tz),selected,tz,granularity='summary')
+        output[str(days)]=parse_speed(buffer.getvalue())
+    return output
+
 
 def ratio_color(value):
     match = re.search(r"[0-9]+(?:\.[0-9]+)?", value)
@@ -182,7 +220,7 @@ class Tooltip:
         self.popup = tk.Toplevel(self.widget)
         self.popup.overrideredirect(True)
         self.popup.attributes('-topmost', True)
-        tk.Label(self.popup, text=self.text, bg='#202224', fg='#ffffff',
+        tk.Label(self.popup, text=self.text() if callable(self.text) else self.text, bg='#202224', fg='#ffffff',
                  font=('Segoe UI', 9), padx=11, pady=8, justify='left').pack()
         self.popup.update_idletasks()
         x = min(self.widget.winfo_pointerx()+12, self.popup.winfo_screenwidth()-self.popup.winfo_reqwidth()-12)
@@ -205,7 +243,7 @@ class App:
         self.build(); self.draw(); self.setup_tray(); self.schedule()
         # A recent snapshot can be shown immediately without another full scan.
         age = time.time() - self.data.get('last_refresh_at', SNAPSHOT.stat().st_mtime if SNAPSHOT.exists() else 0)
-        if not self.data or (self.settings['interval'] and age >= self.settings['interval']*3600): self.refresh()
+        if not self.data or self.data.get('app_version') != VERSION or (self.settings['interval'] and age >= self.settings['interval']*3600): self.refresh()
     def set_native_icons(self):
         """Load icons at the screen's actual pixel sizes, avoiding 16px upscaling."""
         if os.name != 'nt': return
@@ -249,6 +287,8 @@ class App:
         self.body.bind('<Configure>',adjust)
         self.root.bind_all('<MouseWheel>',lambda e:self.canvas.yview_scroll(int(-e.delta/120),'units'))
         self.status=tk.Label(self.root,text='',font=('Segoe UI',8),fg='#8a8c8f',bg=bg,anchor='w'); self.status.pack(fill='x',padx=20,pady=(5,10))
+        self.status_tooltip=Tooltip(self.status,lambda:self.status_detail if self.status_detail else 'Latest refresh result')
+        self.status_detail=self.data.get('details','')
     def label(self,parent,text,size=10,color='#777b80',font='Segoe UI',bold=False,**kw):
         return tk.Label(parent,text=text,bg=self.bg,fg=color,font=(font,size,'bold' if bold else 'normal'),**kw)
     def draw(self):
@@ -303,11 +343,14 @@ class App:
             ('Python / Tk · desktop interface','https://www.python.org/'),
             ('pystray · tray icon','https://github.com/moses-palmer/pystray'),
             ('Pillow · icons','https://python-pillow.org/'),
-            ('Rich / joblib · speed tool runtime','https://github.com/Textualize/rich'),
+            ('Rich · speed tool formatting','https://github.com/Textualize/rich'),
+            ('joblib · speed tool runtime','https://github.com/joblib/joblib'),
+            ('orjson · fast JSON decoding','https://github.com/ijl/orjson'),
             ('Source code · Codex Meter '+VERSION,'https://github.com/HenryTeo27/ai-agent-usage-speed-app')]:
             link=self.label(footer,title,8,'#73777b',anchor='w',cursor='hand2')
             link.pack(fill='x',pady=2); link.bind('<Button-1>',lambda event,address=url:webbrowser.open(address))
         if not self.busy: self.status.config(text=self.data.get('status','Ready'))
+        self.status_detail=self.data.get('details','')
     def settings_dialog(self):
         win=tk.Toplevel(self.root); win.title('Settings'); win.configure(bg=self.bg); win.resizable(False,False); win.transient(self.root)
         win.geometry(f'+{max(0, self.root.winfo_rootx()+20)}+{max(0, self.root.winfo_rooty()+50)}')
@@ -331,48 +374,54 @@ class App:
     def scheduled(self): self.job=None; self.refresh()
     def refresh(self):
         if self.busy: return
-        self.busy=True
-        self.status.config(text='Reading usage…')
+        self.busy=True; self.refresh_started=time.monotonic(); self.pending={'usage','limits','speed'}
+        self.refresh_errors=[]; self.refresh_notes=[]; self.refresh_timings={}
+        self.status.config(text='Refreshing…')
         threading.Thread(target=self.collect,daemon=True).start()
         self.root.after(100,self.check_results)
     def collect(self):
-        fresh={}; errors=[]
-        try:
-            for name,fn in [('usage',get_usage),('limits',get_limits),('speed',get_speed)]:
-                self.results.put(('stage',{'usage':'Reading usage…','limits':'Reading limits…','speed':'Measuring speed…'}[name]))
-                try:
-                    result=fn()
-                    if name=='speed': fresh[name],note=result; errors.extend([note] if note else [])
-                    else: fresh[name]=result
-                except Exception as e: errors.append(name+': '+str(e).replace('\n',' ')[:120])
-        finally:
-            # Only the UI thread touches Tk, even when a source fails.
-            self.results.put(('done',(fresh,errors)))
+        def scan(name,fn):
+            started=time.monotonic()
+            try: return name,fn(),None,time.monotonic()-started
+            except Exception as exc: return name,None,str(exc).replace('\n',' ')[:180],time.monotonic()-started
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures=[pool.submit(scan,name,fn) for name,fn in [('usage',get_usage),('limits',get_limits),('speed',get_speed)]]
+            for future in as_completed(futures): self.results.put(future.result())
     def check_results(self):
         if self.closed: return
         while True:
-            try: kind,value=self.results.get_nowait()
+            try: name,value,error,elapsed=self.results.get_nowait()
             except queue.Empty: break
-            if kind=='stage': self.status.config(text=value)
+            self.pending.discard(name); self.refresh_timings[name]=round(elapsed,2)
+            if error: self.refresh_errors.append(name+': '+error)
             else:
-                self.finish(*value)
+                if name=='speed': value,note=value; self.refresh_notes.extend([note] if note else [])
+                if name=='usage':
+                    old=self.data.get('usage'); self.data['delta']=value['total_tokens']-old['total_tokens'] if old else None
+                self.data[name]=value
+                self.data.setdefault('updated_at',{})[name]=time.time()
+                # Display each source immediately instead of waiting for the slowest one.
+                self.draw()
+            if not self.pending:
+                self.finish()
                 return
+        waiting=', '.join(sorted(self.pending))
+        self.status.config(text=f'Refreshing {waiting} · {time.monotonic()-self.refresh_started:.0f}s')
         self.root.after(100,self.check_results)
-    def finish(self,fresh,errors):
+    def finish(self):
         if self.closed: return
-        try:
-            old=self.data.get('usage'); new=fresh.get('usage')
-            if new: self.data['delta']=new['total_tokens']-old['total_tokens'] if old else None
-            self.data.update(fresh)
-            self.data['status']=(' · '.join(errors) if errors else 'Updated '+datetime.now().strftime('%H:%M'))
-            if fresh: self.data['last_refresh_at']=time.time()
-            save(SNAPSHOT,self.data)
-        except Exception as e:
-            self.data['status']='Refresh failed: '+str(e)[:120]
+        seconds=time.monotonic()-self.refresh_started
+        updated='Updated '+datetime.now().strftime('%H:%M')+f' · {seconds:.1f}s'
+        details=self.refresh_errors+self.refresh_notes
+        self.data['status']=(updated+(' · tool fallback' if self.refresh_notes else '')) if not self.refresh_errors else 'Partial refresh · '+', '.join(error.split(':')[0] for error in self.refresh_errors)+' failed'
+        self.data['details']='\n'.join(details)
+        self.data['refresh_seconds']=self.refresh_timings
+        self.data['app_version']=VERSION
+        if not self.refresh_errors: self.data['last_refresh_at']=time.time()
+        try: save(SNAPSHOT,self.data)
+        except Exception as exc: self.data['status']='Could not save latest result'; self.data['details']=str(exc)
         finally:
-            self.busy=False
-            self.status.config(text=self.data.get('status','Refresh finished'))
-            self.schedule()
+            self.busy=False; self.schedule()
         self.draw()
     def setup_tray(self):
         im=Image.open(ROOT/'assets/codex-transparent.png').convert('RGBA')
@@ -390,6 +439,20 @@ def worker_main():
     buffer=io.StringIO()
     try:
         if args[0]=='--limits': value=limits_worker()
+        elif args[0]=='--diagnose':
+            value={}
+            def measure(name,fn):
+                started=time.monotonic()
+                try:
+                    result=fn()
+                    if name=='speed': result={'rows':{k:len(rows) for k,rows in result[0].items()},'note':result[1]}
+                    return name,{'ok':True,'seconds':round(time.monotonic()-started,2),'result':result}
+                except Exception as exc: return name,{'ok':False,'seconds':round(time.monotonic()-started,2),'error':str(exc)}
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                futures=[pool.submit(measure,name,fn) for name,fn in [('usage',get_usage),('limits',get_limits),('speed',get_speed)]]
+                for future in as_completed(futures):
+                    name,result=future.result(); value[name]=result
+        elif args[0]=='--speed-batch': value=speed_batch(args[1])
         else:
             script=args[1]; sys.argv=[script]+args[2:]
             with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):

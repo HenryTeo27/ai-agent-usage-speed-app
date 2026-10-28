@@ -12,6 +12,7 @@ The MIT license covers this project's original code. Third-party packages retain
 | Pillow | Image and icon loading | https://python-pillow.org/ — MIT-CMU |
 | Rich | Speed tool console formatting | https://github.com/Textualize/rich — MIT |
 | joblib / cloudpickle | Speed tool runtime | https://github.com/joblib/joblib — BSD-3-Clause; https://github.com/cloudpipe/cloudpickle — BSD-3-Clause |
+| orjson | Fast JSON decoding; upstream speed statistics are unchanged | https://github.com/ijl/orjson — Apache-2.0 OR MIT |
 | tzdata | Timezone database | https://github.com/python/tzdata — Apache-2.0; IANA data public domain |
 | PyInstaller | Windows packaging | https://pyinstaller.org/ — GPL with bootloader exception |
 

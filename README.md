@@ -50,7 +50,7 @@ Both installers place the app in `%LOCALAPPDATA%\Programs\CodexMeter` and add de
 | --- | --- |
 | Remaining allowance | `100 − usedPercent` from local Codex `account/rateLimits/read` |
 | This month / all time tokens and USD | `npx --yes ccusage@latest codex monthly --json` |
-| Normal / Fast speed | [codex-speed by pszemraj](https://gist.github.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635), Selected history, 1 and 14 calendar days |
+| Normal / Fast speed | [codex-speed by pszemraj](https://gist.github.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635), Selected history, rolling 1-day and 14-day windows |
 | Ratio | Fast median effective tokens/s ÷ Normal median effective tokens/s |
 | Green token change | Difference in raw all-time tokens between the latest two successful usage scans |
 
@@ -64,7 +64,7 @@ Each refresh asks npm for the latest ccusage and downloads the latest upstream c
 
 The app retains settings, one latest snapshot, and one working speed-tool script. It does not keep a scan history or copy chat content. Speed CSVs and parse caches are temporary and deleted after scans. Existing Codex logs are read in place. npm maintains its normal package cache. No telemetry or chat upload is implemented. npm, the speed download and ccusage pricing resolution may access the network; the Codex account query uses Codex's existing sign-in.
 
-The app sleeps between scans and scans run outside the UI thread. Each scan still reads local logs and briefly uses CPU, disk and memory; large log collections can take longer. Commands have timeouts. Failed sources retain their previous values and show a status message. This release is unsigned; Windows may identify the download as an unrecognized app.
+The app sleeps between scans. Usage, limits and speed run concurrently outside the UI thread, and each source appears as soon as it completes. The speed worker parses recent logs once for both windows; orjson accelerates JSON decoding while codex-speed still computes the statistics. No persistent sample cache is written. Each scan still reads local logs and briefly uses CPU, disk and memory; large log collections can take longer. The status shows pending sources and elapsed time. Completed refreshes show an update time and duration. Hover over the status for any source errors or tool-update fallback details. Commands have timeouts. Failed sources retain their previous values and show a status message. This release is unsigned; Windows may identify the download as an unrecognized app.
 
 ## Development and build
 
@@ -90,3 +90,9 @@ Open an issue or pull request with the agent name, a link to its usage or speed 
 ## License and credits
 
 Original code: [MIT](LICENSE). Third-party components retain their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Codex and OpenAI marks identify the service. This is an independent community app.
+
+## Troubleshooting refresh
+
+v1.0.1 fixes an HTTPS startup failure in packages built from a Codex Python runtime: the runtime requires an adjacent certificate data file, which is now included. TLS verification remains enabled, and the packaged smoke test creates a verified SSL context.
+
+A tool-update fallback means current logs were scanned with an older working tool; it does not mean the displayed scan failed. A failed data source is reported as **Partial refresh**, keeps its previous value, and exposes the error on hover. Network access and log size affect timing. With several gigabytes of logs, a full ccusage scan can take longer than a speed scan.
