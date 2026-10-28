@@ -20,7 +20,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.7'
+VERSION = '1.0.8'
 DEFAULT = {'interval': 6, 'reserve': 600000000}
 CACHED_SPEED = DATA / 'tools' / 'codex_speed.py'
 
@@ -584,7 +584,18 @@ class App:
         ttk.Combobox(box,textvariable=v,values=['Manual','2 hours','4 hours','6 hours','8 hours','12 hours'],state='readonly',width=18).grid(row=0,column=1,padx=(20,0))
         self.label(box,'Reserve adjustment (tokens)',10,anchor='w').grid(row=1,column=0,sticky='w',pady=6)
         r=tk.StringVar(value=str(self.settings['reserve'])); ttk.Entry(box,textvariable=r,width=21).grid(row=1,column=1,padx=(20,0))
-        self.label(box,'Added to all-time tokens. Existing reserve records may overlap.',9,anchor='w').grid(row=2,column=0,columnspan=2,sticky='w',pady=8)
+        reserve_help = (
+            'Manually fills a token gap when local logs capture only part of your '
+            'gpt-reserve usage. Some reserve tokens are already counted.\n\n'
+            'OpenAI describes Luna Reserve as GPT-5.6 Luna. ccusage uses that '
+            'model to price gpt-reserve; this does not verify the actual routed '
+            'model or recover missing token records.\n\n'
+            'If OpenAI provides a comparable token total, enter the difference '
+            'from your raw logged total, before this adjustment. Match the '
+            'account, devices and time period. Added once to all-time tokens '
+            'only; monthly tokens and USD stay unchanged. Set 0 for no adjustment.'
+        )
+        self.label(box,reserve_help,9,anchor='w',wraplength=405,justify='left').grid(row=2,column=0,columnspan=2,sticky='w',pady=8)
         def apply():
             try:
                 num=int(r.get().replace(',',''))
@@ -594,6 +605,9 @@ class App:
         ttk.Button(box,text='Save',command=apply).grid(row=3,column=1,sticky='e',pady=(10,0))
         sources=tk.Frame(box,bg=self.bg);sources.grid(row=4,column=0,columnspan=2,sticky='ew')
         self.build_sources(sources)
+        win.update_idletasks()
+        win.geometry(f'+{max(0,min(self.root.winfo_rootx()+20,win.winfo_screenwidth()-win.winfo_reqwidth()))}+'
+                     f'{max(0,min(self.root.winfo_rooty()+50,win.winfo_screenheight()-win.winfo_reqheight()-60))}')
     def schedule(self):
         if self.job: self.root.after_cancel(self.job); self.job=None
         if self.settings['interval']: self.job=self.root.after(self.settings['interval']*3600000,self.scheduled)
