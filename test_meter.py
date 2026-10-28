@@ -2,6 +2,35 @@ import unittest
 from unittest.mock import patch
 import meter
 
+class DeltaTests(unittest.TestCase):
+    def test_adjacent_refreshes_replace_large_previous_delta(self):
+        data={'usage':{'total_tokens':1_000_000_000},'delta':150_000_000}
+        meter.apply_usage_result(data,{'total_tokens':1_150_000_000},dict(data['usage']),1)
+        self.assertEqual(data['delta'],150_000_000)
+        meter.apply_usage_result(data,{'total_tokens':1_150_200_000},dict(data['usage']),2)
+        self.assertEqual(data['delta'],200_000)
+        self.assertIn('Difference: +200,000',meter.delta_tooltip(data))
+        meter.apply_usage_result(data,{'total_tokens':1_150_200_000},dict(data['usage']),3)
+        self.assertEqual(data['delta'],0)
+
+    def test_restart_uses_last_successful_usage_and_month_rollover(self):
+        import tempfile
+        from pathlib import Path
+        data={'usage':{'month':'2026-10','total_tokens':1000},'delta':900}
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'snapshot.json'
+            meter.apply_usage_result(data,{'month':'2026-10','total_tokens':1200},dict(data['usage']),1)
+            meter.save(path,data)
+            restored=meter.read(path,{})
+            meter.apply_usage_result(restored,{'month':'2026-11','total_tokens':1207},dict(restored['usage']),2)
+            self.assertEqual(restored['delta'],7)
+            self.assertEqual(restored['delta_comparison']['previous_tokens'],1200)
+
+    def test_first_scan_has_no_invented_delta(self):
+        data={}
+        meter.apply_usage_result(data,{'total_tokens':1000},None,1)
+        self.assertIsNone(data['delta'])
+
 class ResourceTests(unittest.TestCase):
     def test_worker_import_does_not_load_gui(self):
         code="import meter,sys; assert not {'tkinter','pystray','PIL.ImageTk'}.intersection(sys.modules)"
@@ -98,6 +127,7 @@ class RefreshTests(unittest.TestCase):
             while 'usage' not in app.data and meter.time.monotonic()<deadline:
                 app.root.update(); meter.time.sleep(0.01)
             self.assertEqual(app.data['usage']['month_tokens'],123)
+            self.assertEqual(meter.read(meter.SNAPSHOT,{})['usage'],usage)
             self.assertTrue(app.busy)
             self.assertNotIn('speed',app.data)
             gate.set()

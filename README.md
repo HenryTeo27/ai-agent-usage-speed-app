@@ -4,7 +4,7 @@ A small Windows desktop meter for Codex usage and speed. Close it to the notific
 
 ![Codex Meter desktop app with demo usage and speed data](docs/screenshot.png)
 
-*Actual app window with synthetic demo data. The source credits are below the data.*
+*Actual app window with synthetic demo data. Source credits are now in Settings.*
 
 ## Quick install / 快速安装
 
@@ -24,8 +24,8 @@ Python and the speed tool's libraries are included in the release. codex-speed i
 - **⚙** selects manual refresh or every 2, 4, 6, 8 or 12 hours. It also sets the all-time token adjustment.
 - Only one app window runs at a time. Opening another copy restores the existing window, including one hidden in the tray.
 - Closing the window hides it in the notification area. Use **Open**, **Refresh** or **Quit** from the tray menu.
-- Hover over speed values for units and sample counts. Hover over the green token change for “Since Last Refresh”.
-- The 1-day speed table appears above the 14-day table. Mouse-wheel scrolling reaches the source credits below the data. There is no visible scrollbar.
+- Hover over speed values for units and sample counts. Hover over the green token change for “Since Last Refresh” and the previous/current raw totals. Each successful usage response becomes the next baseline immediately, even while speed or account queries are pending. Manual and automatic refresh use the same baseline. A previous +150,000,000 followed by only 200,000 new tokens displays +200,000; the old increase is never added again.
+- The 1-day speed table appears above the 14-day table. Sources & components are listed at the bottom of Settings. There is no visible scrollbar on the main window.
 - The app does not start with Windows. Scheduled scans run while it is open or in the tray. Opening recent results does not start another scan.
 
 ## Install with Codex or from source

@@ -19,7 +19,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.2'
+VERSION = '1.0.3'
 DEFAULT = {'interval': 6, 'reserve': 600000000}
 CACHED_SPEED = DATA / 'tools' / 'codex_speed.py'
 
@@ -73,6 +73,25 @@ def save(path, data):
     temp = path.with_suffix('.tmp')
     temp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
     temp.replace(path)
+
+def apply_usage_result(data,value,previous,observed_at):
+    """One adjacent pair only; the reserve adjustment never enters this calculation."""
+    before=previous['total_tokens'] if previous is not None else None
+    after=value['total_tokens']
+    previous_at=data.get('updated_at',{}).get('usage')
+    data['usage']=dict(value)
+    data['delta']=after-before if before is not None else None
+    data['delta_comparison']={'previous_tokens':before,'current_tokens':after,
+                              'previous_at':previous_at,'current_at':observed_at}
+    data.setdefault('updated_at',{})['usage']=observed_at
+
+
+def delta_tooltip(data):
+    pair=data.get('delta_comparison',{})
+    before=pair.get('previous_tokens');after=pair.get('current_tokens')
+    if before is None or after is None: return 'Since Last Refresh'
+    return f'Since Last Refresh\nPrevious total: {before:,}\nCurrent total: {after:,}\nDifference: {after-before:+,} tokens'
+
 
 def run(args, timeout=180, env=None):
     with PROCESS_LOCK:
@@ -354,7 +373,7 @@ class App:
             Tooltip(price,'Estimated API-equivalent cost (USD)')
         d=self.data.get('delta')
         delta=self.label(self.body,f'{d:+,} tokens' if d is not None else '—',9,'#185c40',anchor='w')
-        delta.pack(fill='x',pady=(7,10)); Tooltip(delta,'Since Last Refresh' if d is not None else 'Available after the next successful refresh')
+        delta.pack(fill='x',pady=(7,10)); Tooltip(delta,delta_tooltip(self.data) if d is not None else 'Available after the next successful refresh')
         tk.Frame(self.body,bg='#e9eaec',height=1).pack(fill='x')
         self.label(self.body,'Speed',11,'#292d30',anchor='w').pack(fill='x',pady=(9,5))
         speed=self.data.get('speed',{})
@@ -376,7 +395,10 @@ class App:
                     elif col==3:
                         Tooltip(label,'Fast ÷ Normal'+ ('\nLimited sample size' if '(' in row['ratio'] else ''))
             if not rows: self.label(grid,'No available samples',9,anchor='w').grid(row=1,column=0,columnspan=4,sticky='w')
-        footer=tk.Frame(self.body,bg=self.bg); footer.pack(fill='x',pady=(14,18))
+        if not self.busy: self.status.config(text=self.data.get('status','Ready'))
+        self.status_detail=self.data.get('details','')
+    def build_sources(self,parent):
+        footer=tk.Frame(parent,bg=self.bg); footer.pack(fill='x',pady=(14,18))
         tk.Frame(footer,bg='#e9eaec',height=1).pack(fill='x',pady=(0,12))
         self.label(footer,'Sources & components',9,anchor='w').pack(fill='x')
         self.label(footer,'Checks latest tools on refresh; falls back when unavailable.',8,anchor='w',wraplength=390,justify='left').pack(fill='x',pady=(4,8))
@@ -393,10 +415,11 @@ class App:
             ('Source code · Codex Meter '+VERSION,'https://github.com/HenryTeo27/ai-agent-usage-speed-app')]:
             link=self.label(footer,title,8,'#73777b',anchor='w',cursor='hand2')
             link.pack(fill='x',pady=2); link.bind('<Button-1>',lambda event,address=url:webbrowser.open(address))
-        if not self.busy: self.status.config(text=self.data.get('status','Ready'))
-        self.status_detail=self.data.get('details','')
     def settings_dialog(self):
+        if getattr(self,'settings_window',None) is not None and self.settings_window.winfo_exists():
+            self.settings_window.lift();return
         win=tk.Toplevel(self.root); win.title('Settings'); win.configure(bg=self.bg); win.resizable(False,False); win.transient(self.root)
+        self.settings_window=win; win.grab_set()
         win.geometry(f'+{max(0, self.root.winfo_rootx()+20)}+{max(0, self.root.winfo_rooty()+50)}')
         box=tk.Frame(win,bg=self.bg); box.pack(padx=24,pady=22)
         self.label(box,'Refresh interval',10,anchor='w').grid(row=0,column=0,sticky='w',pady=6)
@@ -412,12 +435,15 @@ class App:
             except ValueError: messagebox.showerror('Settings','Enter a non-negative whole number.',parent=win); return
             self.settings={'interval':0 if v.get()=='Manual' else int(v.get().split()[0]),'reserve':num}; save(CONFIG,self.settings); self.schedule(); self.draw(); win.destroy()
         ttk.Button(box,text='Save',command=apply).grid(row=3,column=1,sticky='e',pady=(10,0))
+        sources=tk.Frame(box,bg=self.bg);sources.grid(row=4,column=0,columnspan=2,sticky='ew')
+        self.build_sources(sources)
     def schedule(self):
         if self.job: self.root.after_cancel(self.job); self.job=None
         if self.settings['interval']: self.job=self.root.after(self.settings['interval']*3600000,self.scheduled)
     def scheduled(self): self.job=None; self.refresh()
     def refresh(self):
         if self.busy: return
+        self.usage_baseline=dict(self.data['usage']) if 'usage' in self.data else None
         self.busy=True; self.refresh_started=time.monotonic(); self.pending={'usage','limits','speed'}
         self.refresh_errors=[]; self.refresh_notes=[]; self.refresh_timings={}
         self.status.config(text='Refreshing…')
@@ -441,7 +467,11 @@ class App:
             else:
                 if name=='speed': value,note=value; self.refresh_notes.extend([note] if note else [])
                 if name=='usage':
-                    old=self.data.get('usage'); self.data['delta']=value['total_tokens']-old['total_tokens'] if old else None
+                    apply_usage_result(self.data,value,self.usage_baseline,time.time())
+                    # Commit this displayed usage baseline even if another source stalls.
+                    self.data['status']='Usage updated '+datetime.now().strftime('%H:%M')
+                    try: save(SNAPSHOT,self.data)
+                    except OSError as exc: self.refresh_errors.append('save: '+str(exc)[:120])
                 self.data[name]=value
                 self.data.setdefault('updated_at',{})[name]=time.time()
                 # Display each source immediately instead of waiting for the slowest one.
