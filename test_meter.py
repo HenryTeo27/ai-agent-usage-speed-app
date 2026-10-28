@@ -2,6 +2,81 @@ import unittest
 from unittest.mock import patch
 import meter
 
+class SnapshotTests(unittest.TestCase):
+    def test_interrupted_replace_keeps_last_snapshot(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'snapshot.json'
+            original={'usage':{'total_tokens':1200},'speed':{'1':[]},'limits':{'primary':{'usedPercent':10}}}
+            meter.save(path,original)
+            with patch.object(meter.os,'replace',side_effect=OSError('simulated interruption')):
+                with self.assertRaises(OSError): meter.save(path,{'usage':{'total_tokens':1300}})
+            self.assertEqual(meter.read(path,{}),original)
+            self.assertEqual([file.name for file in Path(tmp).iterdir()],['snapshot.json'])
+
+    def test_existing_cache_is_shown_without_rescanning_after_upgrade(self):
+        import tempfile
+        from pathlib import Path
+        data={'usage':{'month_tokens':123,'total_tokens':456,'month_cost':1,'total_cost':2},
+              'speed':{'1':[],'14':[]},'limits':{},'app_version':'older','last_refresh_at':meter.time.time()}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(meter,'SNAPSHOT',Path(tmp)/'snapshot.json'), patch.object(meter.App,'setup_tray'), patch.object(meter.App,'refresh') as refresh:
+            meter.save(meter.SNAPSHOT,data)
+            app=meter.App();app.root.update()
+            self.assertEqual(app.data['usage'],data['usage'])
+            refresh.assert_not_called()
+            self.assertFalse(hasattr(app,'_window_proc'))
+            app.closed=True
+            if app.job: app.root.after_cancel(app.job)
+            app.root.destroy()
+
+class WindowLifecycleTests(unittest.TestCase):
+    @unittest.skipUnless(meter.os.name=='nt','Native Windows window selection')
+    def test_tooltip_is_not_selected_as_main_and_is_closed_on_hide(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp, patch.object(meter,'SNAPSHOT',Path(tmp)/'snapshot.json'), patch.object(meter.App,'setup_tray'), patch.object(meter.App,'refresh'):
+            app=meter.App();app.root.update()
+            label=meter.tk.Label(app.root,text='tip');label.pack()
+            tip=meter.Tooltip(label,'Example');tip.show();app.root.update()
+            self.assertEqual(tip.popup.title(),'Codex Meter tooltip')
+            self.assertEqual(meter.find_ready_window(),app.window_handle)
+            app.hide();app.root.update()
+            self.assertIsNone(tip.popup)
+            self.assertEqual(meter.find_ready_window(),app.window_handle)
+            app.closed=True
+            if app.job: app.root.after_cancel(app.job)
+            app.root.destroy()
+
+    @unittest.skipUnless(meter.os.name=='nt','Native Windows restore')
+    def test_restore_rebinds_native_window_and_keeps_cached_data(self):
+        import ctypes,tempfile
+        from ctypes import wintypes
+        from pathlib import Path
+        saved={'usage':{'month_tokens':123,'total_tokens':456,'month_cost':1,'total_cost':2},
+               'speed':{'1':[],'14':[]},'limits':{},'last_refresh_at':meter.time.time()}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(meter,'SNAPSHOT',Path(tmp)/'snapshot.json'), patch.object(meter.App,'setup_tray'), patch.object(meter.App,'refresh'):
+            meter.save(meter.SNAPSHOT,saved)
+            app=meter.App();app.root.title('Codex Meter lifecycle test');app.root.update()
+            user=ctypes.windll.user32
+            user.GetPropW.argtypes=[wintypes.HWND,wintypes.LPCWSTR];user.GetPropW.restype=wintypes.HANDLE
+            user.ShowWindow.argtypes=[wintypes.HWND,ctypes.c_int]
+            try:
+                for cycle in range(4):
+                    app.hide();app.root.update();app.dirty=True
+                    user.ShowWindow(app.window_handle,9);app.root.update()
+                    current=user.GetParent(app.root.winfo_id())
+                    self.assertEqual(current,app.window_handle)
+                    self.assertEqual(user.GetPropW(current,'CodexMeter.Ready'),1)
+                    self.assertEqual(app.root.state(),'normal')
+                    self.assertFalse(app.dirty)
+                    self.assertEqual(app.data['usage'],saved['usage'])
+                    self.assertTrue(app.body.winfo_children())
+            finally:
+                app.closed=True
+                if app.job: app.root.after_cancel(app.job)
+                app.root.destroy()
+
 class DeltaTests(unittest.TestCase):
     def test_adjacent_refreshes_replace_large_previous_delta(self):
         data={'usage':{'total_tokens':1_000_000_000},'delta':150_000_000}
@@ -124,13 +199,15 @@ class RefreshTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.object(meter,'SNAPSHOT',Path(tmp)/'snapshot.json'), patch.object(meter,'get_usage',return_value=usage), patch.object(meter,'get_limits',return_value={}), patch.object(meter,'get_speed',side_effect=slow_speed):
             app.refresh()
             deadline=meter.time.monotonic()+2
-            while 'usage' not in app.data and meter.time.monotonic()<deadline:
+            while ('usage' not in app.data or 'limits' not in app.data) and meter.time.monotonic()<deadline:
                 app.root.update(); meter.time.sleep(0.01)
             self.assertEqual(app.data['usage']['month_tokens'],123)
             self.assertEqual(meter.read(meter.SNAPSHOT,{})['usage'],usage)
+            self.assertEqual(meter.read(meter.SNAPSHOT,{})['limits'],{})
             self.assertTrue(app.busy)
             self.assertNotIn('speed',app.data)
             gate.set()
+            deadline=meter.time.monotonic()+3
             while app.busy and meter.time.monotonic()<deadline:
                 app.root.update(); meter.time.sleep(0.01)
             self.assertFalse(app.busy)

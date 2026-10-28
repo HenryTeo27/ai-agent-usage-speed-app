@@ -26,7 +26,7 @@ Python and the speed tool's libraries are included in the release. codex-speed i
 - Closing the window hides it in the notification area. Use **Open**, **Refresh** or **Quit** from the tray menu.
 - Hover over speed values for units and sample counts. Hover over the green token change for “Since Last Refresh” and the previous/current raw totals. Each successful usage response becomes the next baseline immediately, even while speed or account queries are pending. Manual and automatic refresh use the same baseline. A previous +150,000,000 followed by only 200,000 new tokens displays +200,000; the old increase is never added again.
 - The 1-day speed table appears above the 14-day table. Sources & components are listed at the bottom of Settings. There is no visible scrollbar on the main window.
-- The app does not start with Windows. Scheduled scans run while it is open or in the tray. Opening recent results does not start another scan.
+- The app does not start with Windows. Scheduled scans run while it is open or in the tray. Opening recent results shows the saved values immediately. Upgrading alone does not trigger a scan; scheduled refresh runs only when due.
 
 ## Install with Codex or from source
 
@@ -101,3 +101,9 @@ A tool-update fallback means current logs were scanned with an older working too
 A 20-second visible-window spot check used about **43 MiB working set / 23 MiB private memory**, down from about 64 / 40 MiB in v1.0.1. Hidden in the tray, the sample used about 41 / 23 MiB with no measurable CPU-time increase over 20 seconds. These are measurements on one computer, not fixed resource limits or a power-draw guarantee.
 
 Workers skip GUI libraries. Small ICO frames replace the full-size tray bitmap. Hidden windows defer redraws, refresh polling stops between scans, and quitting terminates owned scan commands and their children. External ccusage and speed parsing still use CPU, disk and more memory during refresh. See [measurement details and reproduction steps](docs/performance.md).
+
+## Startup and latest-result storage in v1.0.6
+
+The window is built from the saved snapshot before it becomes visible. Opening the desktop shortcut restores an already-ready instance instead of exposing a partially built page. The title-strip customization uses native Windows styles and does not install Python window-procedure callbacks. Desktop reopening locates the marked main window rather than matching its title, so a tooltip cannot be mistaken for the app. Tooltips are cleared when hiding to the tray.
+
+Each successful usage, limits or speed result is saved before it is displayed. All results replace the same `snapshot.json`; no refresh history is kept. Writes flush to disk and atomically replace the file, so an interrupted replacement leaves the previous valid snapshot intact. Failed sources keep their previous results. Opening a cached version after an upgrade does not require a new scan.

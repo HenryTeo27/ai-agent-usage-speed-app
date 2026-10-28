@@ -1,4 +1,5 @@
 import queue
+import weakref
 import contextlib, io, webbrowser
 import importlib.util
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,7 +20,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.5'
+VERSION = '1.0.6'
 DEFAULT = {'interval': 6, 'reserve': 600000000}
 CACHED_SPEED = DATA / 'tools' / 'codex_speed.py'
 
@@ -65,14 +66,28 @@ def cancel_scans():
 
 
 def read(path, fallback):
-    try: return json.loads(path.read_text(encoding='utf-8'))
+    try: return json.loads(path.read_text(encoding='utf-8-sig'))
     except (OSError, ValueError): return fallback
 
-def save(path, data):
-    DATA.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix('.tmp')
-    temp.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
-    temp.replace(path)
+def save(path,data):
+    """Replace one durable snapshot; interrupted writes never truncate the old one."""
+    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+    content=json.dumps(data,ensure_ascii=False,allow_nan=False)
+    temporary=None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',dir=path.parent,
+                                         prefix='.'+path.stem+'-',suffix='.tmp',delete=False) as stream:
+            temporary=Path(stream.name)
+            stream.write(content);stream.flush();os.fsync(stream.fileno())
+        os.replace(temporary,path)
+    finally:
+        if temporary is not None: temporary.unlink(missing_ok=True)
+
+
+def load_snapshot():
+    data=read(SNAPSHOT,{})
+    return data if isinstance(data,dict) else {}
+
 
 def apply_usage_result(data,value,previous,observed_at):
     """One adjacent pair only; the reserve adjustment never enters this calculation."""
@@ -264,9 +279,11 @@ def remaining_percent(used):
 
 
 class Tooltip:
+    instances=weakref.WeakSet()
     """A small, event-driven tooltip; no polling or permanent window."""
     def __init__(self, widget, text):
         self.widget, self.text, self.popup, self.timer = widget, text, None, None
+        self.instances.add(self)
         widget.bind('<Enter>', self.enter, add='+')
         widget.bind('<Leave>', self.hide, add='+')
         widget.bind('<ButtonPress>', self.hide, add='+')
@@ -277,6 +294,8 @@ class Tooltip:
         self.timer = None
         if not self.widget.winfo_exists(): return
         self.popup = tk.Toplevel(self.widget)
+        self.popup.title('Codex Meter tooltip')
+        self.popup.transient(self.widget.winfo_toplevel())
         self.popup.overrideredirect(True)
         self.popup.attributes('-topmost', True)
         tk.Label(self.popup, text=self.text() if callable(self.text) else self.text, bg='#202224', fg='#ffffff',
@@ -296,76 +315,44 @@ class App:
     def __init__(self):
         load_gui()
         self.dirty=False
-        self.settings={**DEFAULT, **read(CONFIG,{})}; self.data=read(SNAPSHOT,{}); self.busy=False; self.closed=False; self.job=None; self.results=queue.Queue()
+        self.settings={**DEFAULT, **read(CONFIG,{})}; self.data=load_snapshot(); self.busy=False; self.closed=False; self.job=None; self.results=queue.Queue()
         if self.data.get('status','').startswith('Updated '):
             self.data['status']=re.sub(r'\s*·\s*\d+(?:\.\d+)?s(?=\s*·|$)','',self.data['status'])
-        self.root=tk.Tk(); self.root.title('Codex Meter'); self.root.geometry('480x650'); self.root.minsize(440,610); self.root.configure(bg='#ffffff')
+        self.root=tk.Tk(); self.root.withdraw(); self.root.title('Codex Meter'); self.root.geometry('480x650'); self.root.minsize(440,610); self.root.configure(bg='#ffffff')
         self.root.iconbitmap(str(ROOT/'assets/codex-transparent.ico'))
-        self.root.after_idle(self.configure_window)
         self.root.protocol('WM_DELETE_WINDOW',self.hide)
         self.root.bind('<Map>',self.on_map)
         self.root.bind('<Configure>',self.update_window_shape)
-        self.build(); self.draw(); self.setup_tray(); self.schedule()
-        if '--start-hidden' in sys.argv: self.hide()
+        self.build(); self.draw()
+        self.root.update_idletasks();self.configure_window()
+        self.setup_tray();self.schedule()
+        self.publish_ready()
+        if '--start-hidden' not in sys.argv: self.show()
         # A recent snapshot can be shown immediately without another full scan.
         age = time.time() - self.data.get('last_refresh_at', SNAPSHOT.stat().st_mtime if SNAPSHOT.exists() else 0)
-        if not self.data or self.data.get('app_version') != VERSION or (self.settings['interval'] and age >= self.settings['interval']*3600): self.refresh()
+        if not self.data or (self.settings['interval'] and age >= self.settings['interval']*3600): self.root.after_idle(self.refresh)
     def configure_window(self):
-        self.set_native_icons()
-        if os.name != 'nt' or hasattr(self,'_window_proc'): return
+        """Use native styles, without installing Python callbacks in the window procedure."""
+        if os.name!='nt': return
         import ctypes
         from ctypes import wintypes
         user=ctypes.windll.user32
+        self.set_native_icons()
         hwnd=user.GetParent(self.root.winfo_id())
+        if not hwnd: return
+        if getattr(self,'window_handle',None)!=hwnd and hasattr(self,'_native_rounding'):
+            del self._native_rounding
         self.window_handle=hwnd
-        get_rect=user.GetWindowRect;get_rect.argtypes=[wintypes.HWND,ctypes.POINTER(wintypes.RECT)]
-        user.IsZoomed.argtypes=[wintypes.HWND]
-        user.GetDpiForWindow.argtypes=[wintypes.HWND]
-        call=user.CallWindowProcW
-        call.argtypes=[ctypes.c_void_p,wintypes.HWND,wintypes.UINT,wintypes.WPARAM,wintypes.LPARAM]
-        call.restype=wintypes.LPARAM
-        set_proc=user.SetWindowLongPtrW
-        set_proc.argtypes=[wintypes.HWND,ctypes.c_int,ctypes.c_void_p]
-        set_proc.restype=ctypes.c_void_p
-        callback=ctypes.WINFUNCTYPE(wintypes.LPARAM,wintypes.HWND,wintypes.UINT,wintypes.WPARAM,wintypes.LPARAM)
-        def window_proc(handle,message,wparam,lparam):
-            if message==0x24:  # WM_GETMINMAXINFO: maximize within the monitor work area.
-                result=call(self._original_window_proc,handle,message,wparam,lparam)
-                class MinMax(ctypes.Structure):
-                    _fields_=[('reserved',wintypes.POINT),('max_size',wintypes.POINT),('max_position',wintypes.POINT),('min_track',wintypes.POINT),('max_track',wintypes.POINT)]
-                class MonitorInfo(ctypes.Structure):
-                    _fields_=[('size',wintypes.DWORD),('monitor',wintypes.RECT),('work',wintypes.RECT),('flags',wintypes.DWORD)]
-                user.MonitorFromWindow.argtypes=[wintypes.HWND,wintypes.DWORD];user.MonitorFromWindow.restype=wintypes.HANDLE
-                user.GetMonitorInfoW.argtypes=[wintypes.HANDLE,ctypes.POINTER(MonitorInfo)]
-                info=MonitorInfo();info.size=ctypes.sizeof(info)
-                if user.GetMonitorInfoW(user.MonitorFromWindow(handle,2),ctypes.byref(info)):
-                    bounds=ctypes.cast(lparam,ctypes.POINTER(MinMax)).contents
-                    bounds.max_position.x=info.work.left-info.monitor.left;bounds.max_position.y=info.work.top-info.monitor.top
-                    bounds.max_size.x=info.work.right-info.work.left;bounds.max_size.y=info.work.bottom-info.work.top
-                return result
-            if message==0x83 and wparam: return 0  # WM_NCCALCSIZE: entire window is the page.
-            if message==0x84:  # WM_NCHITTEST: retain native edge/corner resizing.
-                if user.IsZoomed(handle): return 1
-                rect=wintypes.RECT();get_rect(handle,ctypes.byref(rect))
-                x=ctypes.c_short(lparam & 0xffff).value;y=ctypes.c_short((lparam >> 16) & 0xffff).value
-                border=max(5,round(6*(user.GetDpiForWindow(handle) or 96)/96))
-                left=x<rect.left+border;right=x>=rect.right-border
-                top=y<rect.top+border;bottom=y>=rect.bottom-border
-                if top and left: return 13
-                if top and right: return 14
-                if bottom and left: return 16
-                if bottom and right: return 17
-                if left: return 10
-                if right: return 11
-                if top: return 12
-                if bottom: return 15
-                return 1
-            return call(self._original_window_proc,handle,message,wparam,lparam)
-        self._window_proc=callback(window_proc)
-        self._original_window_proc=set_proc(hwnd,-4,self._window_proc)
-        if not self._original_window_proc: raise ctypes.WinError()
-        user.SetWindowPos.argtypes=[wintypes.HWND,wintypes.HWND,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,wintypes.UINT]
-        user.SetWindowPos(hwnd,None,0,0,0,0,0x27)  # Recalculate the frame; preserve position/size.
+        get_style=user.GetWindowLongPtrW
+        get_style.argtypes=[wintypes.HWND,ctypes.c_int];get_style.restype=ctypes.c_ssize_t
+        set_style=user.SetWindowLongPtrW
+        set_style.argtypes=[wintypes.HWND,ctypes.c_int,ctypes.c_ssize_t];set_style.restype=ctypes.c_ssize_t
+        style=get_style(hwnd,-16)
+        # Keep native minimize/maximize behavior; no caption or resize-frame inset.
+        if style & 0x00c40000:
+            set_style(hwnd,-16,style & ~0x00c40000)
+            user.SetWindowPos.argtypes=[wintypes.HWND,wintypes.HWND,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,wintypes.UINT]
+            user.SetWindowPos(hwnd,None,0,0,0,0,0x27)
         self.update_window_shape()
 
     def update_window_shape(self,event=None):
@@ -421,13 +408,21 @@ class App:
         hwnd = user.GetParent(self.root.winfo_id())
         user.GetDpiForWindow.argtypes = [wintypes.HWND]
         dpi = user.GetDpiForWindow(hwnd) or 96
-        self.native_icons = []
-        for kind, metric in ((0, 49), (1, 11)):
-            size = user.GetSystemMetricsForDpi(metric, dpi)
-            icon = user.LoadImageW(None, str(ROOT/'assets/codex-transparent.ico'), 1, size, size, 0x10)
-            if icon:
-                self.native_icons.append(icon)
-                user.SendMessageW(hwnd, 0x80, kind, icon)
+        previous=getattr(self,'native_icons',[])
+        if getattr(self,'native_icon_dpi',None)==dpi and len(previous)==2:
+            icons=previous
+        else:
+            icons=[]
+            for kind,metric in ((0,49),(1,11)):
+                size=user.GetSystemMetricsForDpi(metric,dpi)
+                icons.append(user.LoadImageW(None,str(ROOT/'assets/codex-transparent.ico'),1,size,size,0x10))
+        for kind,icon in enumerate(icons):
+            if icon: user.SendMessageW(hwnd,0x80,kind,icon)
+        if icons is not previous:
+            user.DestroyIcon.argtypes=[wintypes.HANDLE]
+            for icon in previous:
+                if icon: user.DestroyIcon(icon)
+        self.native_icons=icons;self.native_icon_dpi=dpi
 
     def build(self):
         bg='#ffffff'; self.bg=bg
@@ -456,19 +451,13 @@ class App:
         self.status_detail=self.data.get('details','')
     def window_button(self,parent,kind,command,tip):
         scale=max(1,float(self.root.tk.call('tk','scaling'))/(96/72))
-        width,height=round(38*scale),round(28*scale)
+        width,height=round(38*scale),round(33*scale)
         button=tk.Canvas(parent,width=width,height=height,bg=self.bg,bd=0,highlightthickness=0,cursor='arrow',takefocus=True)
-        cx,cy=width/2,height/2;r=4.5*scale;stroke=max(1,scale)
-        def line(x1,y1,x2,y2): button.create_line(x1,y1,x2,y2,fill='#42474b',width=stroke,tags='icon')
-        if kind=='close':
-            line(cx-r,cy-r,cx+r,cy+r);line(cx+r,cy-r,cx-r,cy+r)
-        elif kind=='minimize': line(cx-r,cy,cx+r,cy)
-        else: button.create_rectangle(cx-r,cy-r,cx+r,cy+r,outline='#42474b',width=stroke,tags='icon')
+        glyph={'close':'\ue8bb','minimize':'\ue921','maximize':'\ue922'}[kind]
+        button.create_text(width/2,height/2,text=glyph,font=('Segoe MDL2 Assets',9),fill='#42474b',anchor='center',tags='icon')
         def hover(active):
             button.config(bg=('#c42b1c' if kind=='close' else '#e9ecee') if active else self.bg)
-            color='#ffffff' if active and kind=='close' else '#42474b'
-            if kind=='maximize': button.itemconfigure('icon',outline=color)
-            else: button.itemconfigure('icon',fill=color)
+            button.itemconfigure('icon',fill='#ffffff' if active and kind=='close' else '#42474b')
         button.bind('<Enter>',lambda event:hover(True))
         button.bind('<Leave>',lambda event:hover(False))
         button.bind('<ButtonRelease-1>',lambda event:command() if 0<=event.x<width and 0<=event.y<height else None)
@@ -597,12 +586,11 @@ class App:
                 if name=='speed': value,note=value; self.refresh_notes.extend([note] if note else [])
                 if name=='usage':
                     apply_usage_result(self.data,value,self.usage_baseline,time.time())
-                    # Commit this displayed usage baseline even if another source stalls.
-                    self.data['status']='Usage updated '+datetime.now().strftime('%H:%M')
-                    try: save(SNAPSHOT,self.data)
-                    except OSError as exc: self.refresh_errors.append('save: '+str(exc)[:120])
                 self.data[name]=value
                 self.data.setdefault('updated_at',{})[name]=time.time()
+                self.data['status']=name.capitalize()+' updated '+datetime.now().strftime('%H:%M')
+                try: save(SNAPSHOT,self.data)
+                except OSError as exc: self.refresh_errors.append('save: '+str(exc)[:120])
                 # Display each source immediately instead of waiting for the slowest one.
                 self.render_results()
             if not self.pending:
@@ -628,9 +616,20 @@ class App:
             self.busy=False; self.schedule()
         self.status.config(text=self.data.get('status','Ready'))
         self.render_results()
+    def publish_ready(self):
+        if os.name=='nt' and hasattr(self,'window_handle'):
+            import ctypes
+            from ctypes import wintypes
+            user=ctypes.windll.user32
+            user.SetPropW.argtypes=[wintypes.HWND,wintypes.LPCWSTR,wintypes.HANDLE]
+            user.SetPropW(self.window_handle,'CodexMeter.Ready',1)
+
     def on_map(self,event):
-        if event.widget is self.root and self.dirty:
-            self.draw(); self.dirty=False
+        if event.widget is self.root:
+            # Tk can recreate the native wrapper on restore; never keep its old HWND.
+            self.configure_window()
+            if self.dirty: self.draw();self.dirty=False
+            self.publish_ready()
     def render_results(self):
         if self.root.state()=='withdrawn': self.dirty=True
         else: self.draw()
@@ -638,7 +637,13 @@ class App:
         im=load_icon(32)
         self.tray=pystray.Icon('Codex Meter',im,'Codex Meter',pystray.Menu(pystray.MenuItem('Open',lambda:self.root.after(0,self.show),default=True),pystray.MenuItem('Refresh',lambda:self.root.after(0,self.refresh)),pystray.MenuItem('Quit',lambda:self.root.after(0,self.quit))))
         self.tray.run_detached()
-    def hide(self): self.root.withdraw()
+    def hide(self):
+        for tooltip in list(Tooltip.instances):
+            try:
+                if tooltip.widget.winfo_toplevel() is self.root: tooltip.hide()
+            except tk.TclError: pass
+        if getattr(self,'settings_window',None) is not None and self.settings_window.winfo_exists(): self.settings_window.destroy()
+        self.root.withdraw()
     def show(self):
         if self.dirty: self.draw(); self.dirty=False
         self.root.deiconify(); self.root.lift(); self.root.focus_force()
@@ -683,34 +688,53 @@ def worker_main():
     output.write_text(json.dumps(result),encoding='utf-8')
 
 
+def find_ready_window():
+    import ctypes
+    from ctypes import wintypes
+    user=ctypes.windll.user32
+    user.GetPropW.argtypes=[wintypes.HWND,wintypes.LPCWSTR];user.GetPropW.restype=wintypes.HANDLE
+    callback=ctypes.WINFUNCTYPE(wintypes.BOOL,wintypes.HWND,wintypes.LPARAM)
+    found=[]
+    @callback
+    def inspect_window(hwnd,unused):
+        if user.GetPropW(hwnd,'CodexMeter.Ready'):
+            found.append(hwnd);return False
+        return True
+    user.EnumWindows.argtypes=[callback,wintypes.LPARAM]
+    user.EnumWindows(inspect_window,0)
+    return found[0] if found else None
+
+
 def start_single_instance():
     import ctypes
     from ctypes import wintypes
-    kernel=ctypes.windll.kernel32; user=ctypes.windll.user32
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True);user=ctypes.windll.user32
     kernel.CreateMutexW.argtypes=[ctypes.c_void_p,wintypes.BOOL,wintypes.LPCWSTR]
     kernel.CreateMutexW.restype=wintypes.HANDLE
     kernel.CloseHandle.argtypes=[wintypes.HANDLE]
-    user.FindWindowW.argtypes=[wintypes.LPCWSTR,wintypes.LPCWSTR]
-    user.FindWindowW.restype=wintypes.HWND
-    user.ShowWindow.argtypes=[wintypes.HWND,ctypes.c_int]
-    user.SetForegroundWindow.argtypes=[wintypes.HWND]
+    user.FindWindowW.argtypes=[wintypes.LPCWSTR,wintypes.LPCWSTR];user.FindWindowW.restype=wintypes.HWND
+    user.GetPropW.argtypes=[wintypes.HWND,wintypes.LPCWSTR];user.GetPropW.restype=wintypes.HANDLE
+    user.ShowWindow.argtypes=[wintypes.HWND,ctypes.c_int];user.SetForegroundWindow.argtypes=[wintypes.HWND]
     handle=kernel.CreateMutexW(None,False,'Local\\CodexMeterSingleInstance')
-    existed=kernel.GetLastError()==183
-    if not handle: raise ctypes.WinError()
+    existed=ctypes.get_last_error()==183
+    if not handle: raise ctypes.WinError(ctypes.get_last_error())
     try:
         if existed:
-            # A rapid second launch may arrive before the first window exists.
-            for attempt in range(40):
-                hwnd=user.FindWindowW(None,'Codex Meter')
+            # Never expose a partially built window during rapid double-click launches.
+            for attempt in range(160):
+                hwnd=find_ready_window()
                 if hwnd:
                     user.ShowWindow(hwnd,9)
-                    user.SetForegroundWindow(hwnd)
+                    for restored in range(20):
+                        current=find_ready_window()
+                        if current:
+                            user.SetForegroundWindow(current);break
+                        time.sleep(0.025)
                     break
-                time.sleep(0.1)
+                time.sleep(0.05)
         else:
             App().run()
-    finally:
-        kernel.CloseHandle(handle)
+    finally: kernel.CloseHandle(handle)
 
 
 if __name__=='__main__':
