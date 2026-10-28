@@ -19,7 +19,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.3'
+VERSION = '1.0.4'
 DEFAULT = {'interval': 6, 'reserve': 600000000}
 CACHED_SPEED = DATA / 'tools' / 'codex_speed.py'
 
@@ -299,14 +299,110 @@ class App:
         self.settings={**DEFAULT, **read(CONFIG,{})}; self.data=read(SNAPSHOT,{}); self.busy=False; self.closed=False; self.job=None; self.results=queue.Queue()
         self.root=tk.Tk(); self.root.title('Codex Meter'); self.root.geometry('480x650'); self.root.minsize(440,610); self.root.configure(bg='#ffffff')
         self.root.iconbitmap(str(ROOT/'assets/codex-transparent.ico'))
-        self.root.after_idle(self.set_native_icons)
+        self.root.after_idle(self.configure_window)
         self.root.protocol('WM_DELETE_WINDOW',self.hide)
         self.root.bind('<Map>',self.on_map)
+        self.root.bind('<Configure>',self.update_window_shape)
         self.build(); self.draw(); self.setup_tray(); self.schedule()
         if '--start-hidden' in sys.argv: self.hide()
         # A recent snapshot can be shown immediately without another full scan.
         age = time.time() - self.data.get('last_refresh_at', SNAPSHOT.stat().st_mtime if SNAPSHOT.exists() else 0)
         if not self.data or self.data.get('app_version') != VERSION or (self.settings['interval'] and age >= self.settings['interval']*3600): self.refresh()
+    def configure_window(self):
+        self.set_native_icons()
+        if os.name != 'nt' or hasattr(self,'_window_proc'): return
+        import ctypes
+        from ctypes import wintypes
+        user=ctypes.windll.user32
+        hwnd=user.GetParent(self.root.winfo_id())
+        self.window_handle=hwnd
+        get_rect=user.GetWindowRect;get_rect.argtypes=[wintypes.HWND,ctypes.POINTER(wintypes.RECT)]
+        user.IsZoomed.argtypes=[wintypes.HWND]
+        user.GetDpiForWindow.argtypes=[wintypes.HWND]
+        call=user.CallWindowProcW
+        call.argtypes=[ctypes.c_void_p,wintypes.HWND,wintypes.UINT,wintypes.WPARAM,wintypes.LPARAM]
+        call.restype=wintypes.LPARAM
+        set_proc=user.SetWindowLongPtrW
+        set_proc.argtypes=[wintypes.HWND,ctypes.c_int,ctypes.c_void_p]
+        set_proc.restype=ctypes.c_void_p
+        callback=ctypes.WINFUNCTYPE(wintypes.LPARAM,wintypes.HWND,wintypes.UINT,wintypes.WPARAM,wintypes.LPARAM)
+        def window_proc(handle,message,wparam,lparam):
+            if message==0x24:  # WM_GETMINMAXINFO: maximize within the monitor work area.
+                result=call(self._original_window_proc,handle,message,wparam,lparam)
+                class MinMax(ctypes.Structure):
+                    _fields_=[('reserved',wintypes.POINT),('max_size',wintypes.POINT),('max_position',wintypes.POINT),('min_track',wintypes.POINT),('max_track',wintypes.POINT)]
+                class MonitorInfo(ctypes.Structure):
+                    _fields_=[('size',wintypes.DWORD),('monitor',wintypes.RECT),('work',wintypes.RECT),('flags',wintypes.DWORD)]
+                user.MonitorFromWindow.argtypes=[wintypes.HWND,wintypes.DWORD];user.MonitorFromWindow.restype=wintypes.HANDLE
+                user.GetMonitorInfoW.argtypes=[wintypes.HANDLE,ctypes.POINTER(MonitorInfo)]
+                info=MonitorInfo();info.size=ctypes.sizeof(info)
+                if user.GetMonitorInfoW(user.MonitorFromWindow(handle,2),ctypes.byref(info)):
+                    bounds=ctypes.cast(lparam,ctypes.POINTER(MinMax)).contents
+                    bounds.max_position.x=info.work.left-info.monitor.left;bounds.max_position.y=info.work.top-info.monitor.top
+                    bounds.max_size.x=info.work.right-info.work.left;bounds.max_size.y=info.work.bottom-info.work.top
+                return result
+            if message==0x83 and wparam: return 0  # WM_NCCALCSIZE: entire window is the page.
+            if message==0x84:  # WM_NCHITTEST: retain native edge/corner resizing.
+                if user.IsZoomed(handle): return 1
+                rect=wintypes.RECT();get_rect(handle,ctypes.byref(rect))
+                x=ctypes.c_short(lparam & 0xffff).value;y=ctypes.c_short((lparam >> 16) & 0xffff).value
+                border=max(5,round(6*(user.GetDpiForWindow(handle) or 96)/96))
+                left=x<rect.left+border;right=x>=rect.right-border
+                top=y<rect.top+border;bottom=y>=rect.bottom-border
+                if top and left: return 13
+                if top and right: return 14
+                if bottom and left: return 16
+                if bottom and right: return 17
+                if left: return 10
+                if right: return 11
+                if top: return 12
+                if bottom: return 15
+                return 1
+            return call(self._original_window_proc,handle,message,wparam,lparam)
+        self._window_proc=callback(window_proc)
+        self._original_window_proc=set_proc(hwnd,-4,self._window_proc)
+        if not self._original_window_proc: raise ctypes.WinError()
+        user.SetWindowPos.argtypes=[wintypes.HWND,wintypes.HWND,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,wintypes.UINT]
+        user.SetWindowPos(hwnd,None,0,0,0,0,0x27)  # Recalculate the frame; preserve position/size.
+        self.update_window_shape()
+
+    def update_window_shape(self,event=None):
+        if os.name!='nt' or not hasattr(self,'window_handle'): return
+        if event is not None and event.widget is not self.root: return
+        import ctypes
+        from ctypes import wintypes
+        user=ctypes.windll.user32
+        if not hasattr(self,'_native_rounding'):
+            corner=ctypes.c_int(2)  # DWMWCP_ROUND; retain compositor antialiasing/shadow.
+            dwm=ctypes.windll.dwmapi
+            dwm.DwmSetWindowAttribute.argtypes=[wintypes.HWND,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD]
+            self._native_rounding=dwm.DwmSetWindowAttribute(self.window_handle,33,ctypes.byref(corner),ctypes.sizeof(corner))==0
+            class Margins(ctypes.Structure):
+                _fields_=[('left',ctypes.c_int),('right',ctypes.c_int),('top',ctypes.c_int),('bottom',ctypes.c_int)]
+            margin=Margins(1,1,1,1)
+            dwm.DwmExtendFrameIntoClientArea.argtypes=[wintypes.HWND,ctypes.POINTER(Margins)]
+            dwm.DwmExtendFrameIntoClientArea(self.window_handle,ctypes.byref(margin))
+        if self._native_rounding: return
+        # Windows 10 fallback; update only when the window changes size.
+        user.SetWindowRgn.argtypes=[wintypes.HWND,wintypes.HRGN,wintypes.BOOL]
+        if self.root.state()=='zoomed': user.SetWindowRgn(self.window_handle,None,True);return
+        gdi=ctypes.windll.gdi32
+        gdi.CreateRoundRectRgn.argtypes=[ctypes.c_int]*6;gdi.CreateRoundRectRgn.restype=wintypes.HRGN
+        radius=round(16*(user.GetDpiForWindow(self.window_handle) or 96)/96)
+        region=gdi.CreateRoundRectRgn(0,0,self.root.winfo_width()+1,self.root.winfo_height()+1,radius,radius)
+        if not user.SetWindowRgn(self.window_handle,region,True):
+            gdi.DeleteObject.argtypes=[wintypes.HANDLE];gdi.DeleteObject(region)
+
+    def drag_window(self,event):
+        if os.name=='nt':
+            import ctypes
+            user=ctypes.windll.user32
+            user.ReleaseCapture()
+            user.SendMessageW(self.window_handle,0xA1,2,0)
+
+    def toggle_maximize(self):
+        self.root.state('normal' if self.root.state()=='zoomed' else 'zoomed')
+
     def set_native_icons(self):
         """Load icons at the screen's actual pixel sizes, avoiding 16px upscaling."""
         if os.name != 'nt': return
@@ -333,13 +429,17 @@ class App:
 
     def build(self):
         bg='#ffffff'; self.bg=bg
-        head=tk.Frame(self.root,bg=bg); head.pack(fill='x',padx=20,pady=(8,8))
+        head=tk.Frame(self.root,bg=bg); head.pack(fill='x',padx=0,pady=(0,10))
+        controls=tk.Frame(head,bg=bg);controls.pack(side='right',anchor='n')
+        for kind,cmd,tip in [('close',self.hide,'Hide to tray'),('maximize',self.toggle_maximize,'Maximize / restore'),('minimize',self.root.iconify,'Minimize')]:
+            self.window_button(controls,kind,cmd,tip).pack(side='right')
+        brand=tk.Frame(head,bg=bg);brand.pack(side='left',padx=20,pady=(12,0))
         self.logo=ImageTk.PhotoImage(load_icon(32).resize((28,28),Image.Resampling.LANCZOS),master=self.root)
-        tk.Label(head,image=self.logo,bg=bg).pack(side='left')
-        tk.Label(head,text='Codex',font=('Segoe UI',11),fg='#222426',bg=bg).pack(side='left',padx=9)
-        for text,cmd,tip in [('⚙',self.settings_dialog,'Settings'),('↻',self.refresh,'Refresh')]:
-            button=tk.Button(head,text=text,command=cmd,font=('Segoe UI Symbol',13),relief='flat',bd=0,bg=bg,fg='#62666b',activebackground='#f2f3f4',cursor='hand2',padx=5)
-            button.pack(side='right',padx=2); Tooltip(button,tip)
+        logo=tk.Label(brand,image=self.logo,bg=bg);logo.pack(side='left')
+        name=tk.Label(brand,text='Codex',font=('Segoe UI',11),fg='#222426',bg=bg);name.pack(side='left',padx=9)
+        for widget in (head,brand,logo,name):
+            widget.bind('<ButtonPress-1>',self.drag_window)
+            widget.bind('<Double-Button-1>',lambda event:self.toggle_maximize())
         holder=tk.Frame(self.root,bg=bg); holder.pack(fill='both',expand=True,padx=20)
         self.canvas=tk.Canvas(holder,bg=bg,highlightthickness=0,bd=0)
         self.canvas.pack(side='left',fill='both',expand=True)
@@ -352,16 +452,42 @@ class App:
         self.status=tk.Label(self.root,text='',font=('Segoe UI',8),fg='#8a8c8f',bg=bg,anchor='w'); self.status.pack(fill='x',padx=20,pady=(5,10))
         self.status_tooltip=Tooltip(self.status,lambda:self.status_detail if self.status_detail else 'Latest refresh result')
         self.status_detail=self.data.get('details','')
+    def window_button(self,parent,kind,command,tip):
+        scale=max(1,float(self.root.tk.call('tk','scaling'))/(96/72))
+        width,height=round(38*scale),round(28*scale)
+        button=tk.Canvas(parent,width=width,height=height,bg=self.bg,bd=0,highlightthickness=0,cursor='arrow',takefocus=True)
+        cx,cy=width/2,height/2;r=4.5*scale;stroke=max(1,scale)
+        def line(x1,y1,x2,y2): button.create_line(x1,y1,x2,y2,fill='#42474b',width=stroke,tags='icon')
+        if kind=='close':
+            line(cx-r,cy-r,cx+r,cy+r);line(cx+r,cy-r,cx-r,cy+r)
+        elif kind=='minimize': line(cx-r,cy,cx+r,cy)
+        else: button.create_rectangle(cx-r,cy-r,cx+r,cy+r,outline='#42474b',width=stroke,tags='icon')
+        def hover(active):
+            button.config(bg=('#c42b1c' if kind=='close' else '#e9ecee') if active else self.bg)
+            color='#ffffff' if active and kind=='close' else '#42474b'
+            if kind=='maximize': button.itemconfigure('icon',outline=color)
+            else: button.itemconfigure('icon',fill=color)
+        button.bind('<Enter>',lambda event:hover(True))
+        button.bind('<Leave>',lambda event:hover(False))
+        button.bind('<ButtonRelease-1>',lambda event:command() if 0<=event.x<width and 0<=event.y<height else None)
+        button.bind('<Return>',lambda event:command());button.bind('<space>',lambda event:command())
+        Tooltip(button,tip)
+        return button
+
     def label(self,parent,text,size=10,color='#777b80',font='Segoe UI',bold=False,**kw):
         return tk.Label(parent,text=text,bg=self.bg,fg=color,font=(font,size,'bold' if bold else 'normal'),**kw)
     def draw(self):
         for x in self.body.winfo_children(): x.destroy()
         limits=self.data.get('limits',{})
         windows=[x for x in (limits.get('primary'),limits.get('secondary')) if x and x.get('usedPercent') is not None]
-        for window in windows:
+        for index,window in enumerate(windows or [None]):
             line=tk.Frame(self.body,bg=self.bg); line.pack(fill='x',pady=(0,10))
-            self.label(line,f"{remaining_percent(window['usedPercent']):g}% remaining",15,'#222426',anchor='w').pack(side='left')
-        if not windows: self.label(self.body,'Usage unavailable',12,anchor='w').pack(fill='x',pady=(0,10))
+            text=f"{remaining_percent(window['usedPercent']):g}% remaining" if window else 'Usage unavailable'
+            self.label(line,text,15,'#222426',anchor='w').pack(side='left')
+            if index==0:
+                for symbol,command,tip in [('⚙',self.settings_dialog,'Settings'),('↻',self.refresh,'Refresh')]:
+                    button=tk.Button(line,text=symbol,command=command,font=('Segoe UI Symbol',14),relief='flat',bd=0,bg=self.bg,fg='#72797d',activebackground='#f2f4f3',cursor='hand2',padx=5,takefocus=False)
+                    button.pack(side='right',padx=2);Tooltip(button,tip)
         u=self.data.get('usage',{}); cols=tk.Frame(self.body,bg=self.bg); cols.pack(fill='x')
         for index,(title,key,cost) in enumerate([('This month','month_tokens','month_cost'),('All time','total_tokens','total_cost')]):
             cols.columnconfigure(index,weight=1,uniform='totals')
@@ -378,7 +504,8 @@ class App:
         self.label(self.body,'Speed',11,'#292d30',anchor='w').pack(fill='x',pady=(9,5))
         speed=self.data.get('speed',{})
         for days in ('1','14'):
-            self.label(self.body,'14 days' if days=='14' else '1 day',9,'#777b80',anchor='w').pack(fill='x',pady=(2,3))
+            period=tk.Frame(self.body,bg=self.bg);period.pack(fill='x',pady=(6,7))
+            tk.Label(period,text='14 days' if days=='14' else '1 day',font=('Segoe UI Semibold',10),fg='#41564b',bg='#f0f4f1',padx=8,pady=2).pack(side='left')
             grid=tk.Frame(self.body,bg=self.bg); grid.pack(fill='x',pady=(0,6))
             for i,v in enumerate(['Model','Normal','Fast','Ratio']):
                 self.label(grid,v,8,'#989b9e',anchor='w' if i==0 else 'e').grid(row=0,column=i,sticky='ew',pady=(0,2))

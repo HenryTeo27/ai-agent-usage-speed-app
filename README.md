@@ -4,7 +4,7 @@ A small Windows desktop meter for Codex usage and speed. Close it to the notific
 
 ![Codex Meter desktop app with demo usage and speed data](docs/screenshot.png)
 
-*Actual app window with synthetic demo data. Source credits are now in Settings.*
+*App screenshot with synthetic demo data. The latest layout removes the title bar, uses rounded corners, and places Refresh / Settings beside the remaining allowance. Source credits are in Settings.*
 
 ## Quick install / 快速安装
 
@@ -20,6 +20,7 @@ Python and the speed tool's libraries are included in the release. codex-speed i
 
 ## Use
 
+- Drag the Codex header to move the rounded window. Minimize, maximize/restore and close are in the page header; close hides it to the tray.
 - **↻** refreshes usage, account limits and speed. Previous results stay visible while scanning.
 - **⚙** selects manual refresh or every 2, 4, 6, 8 or 12 hours. It also sets the all-time token adjustment.
 - Only one app window runs at a time. Opening another copy restores the existing window, including one hidden in the tray.
