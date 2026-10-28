@@ -6,6 +6,8 @@ A small Windows desktop meter for Codex usage and speed. Close it to the notific
 
 *App screenshot with synthetic demo data. The latest layout removes the title bar, uses rounded corners, and places Refresh / Settings beside the remaining allowance. Source credits are in Settings.*
 
+The current interface uses slightly larger text and wider outer padding. The default window is 500 × 690 pixels, with 28-pixel side margins. Window controls stay flush with the top-right edge.
+
 ## Quick install
 
 1. Download **[Codex-Meter-Windows-x64.zip](https://github.com/HenryTeo27/ai-agent-usage-speed-app/releases/latest/download/Codex-Meter-Windows-x64.zip)** from [Releases](https://github.com/HenryTeo27/ai-agent-usage-speed-app/releases/latest).

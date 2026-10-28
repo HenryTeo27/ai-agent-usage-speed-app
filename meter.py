@@ -20,8 +20,10 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.9'
+VERSION = '1.0.10'
 REPOSITORY = 'https://github.com/HenryTeo27/ai-agent-usage-speed-app'
+CONTENT_PAD = 28
+SETTINGS_WRAP = 450
 DEFAULT = {'interval': 6, 'reserve': 600000000}
 CACHED_SPEED = DATA / 'tools' / 'codex_speed.py'
 
@@ -300,7 +302,7 @@ class Tooltip:
         self.popup.overrideredirect(True)
         self.popup.attributes('-topmost', True)
         tk.Label(self.popup, text=self.text() if callable(self.text) else self.text, bg='#202224', fg='#ffffff',
-                 font=('Segoe UI', 9), padx=11, pady=8, justify='left').pack()
+                 font=('Segoe UI', 10), padx=12, pady=9, justify='left').pack()
         self.popup.update_idletasks()
         x = min(self.widget.winfo_pointerx()+12, self.popup.winfo_screenwidth()-self.popup.winfo_reqwidth()-12)
         y = min(self.widget.winfo_pointery()+18, self.popup.winfo_screenheight()-self.popup.winfo_reqheight()-12)
@@ -320,7 +322,7 @@ class App:
         if self.data.get('status','').startswith('Updated '):
             self.data['status']=re.sub(r'\s*·\s*\d+(?:\.\d+)?s(?=\s*·|$)','',self.data['status'])
         self.root=tk.Tk(); self.root.withdraw(); self.root.attributes('-alpha',0)
-        self.root.title('Codex Meter'); self.root.geometry('480x650'); self.root.minsize(440,610); self.root.configure(bg='#ffffff')
+        self.root.title('Codex Meter'); self.root.geometry('500x690'); self.root.minsize(460,640); self.root.configure(bg='#ffffff')
         self.root.iconbitmap(str(ROOT/'assets/codex-transparent.ico'))
         self.root.protocol('WM_DELETE_WINDOW',self.hide)
         self.root.bind('<Map>',self.on_map)
@@ -465,20 +467,20 @@ class App:
 
     def build(self):
         bg='#ffffff'; self.bg=bg
-        head=tk.Frame(self.root,bg=bg); head.pack(fill='x',padx=0,pady=(0,10))
+        head=tk.Frame(self.root,bg=bg); head.pack(fill='x',padx=0,pady=(0,14))
         controls=tk.Frame(head,bg=bg);controls.pack(side='right',anchor='n')
         for kind,cmd,tip in [('close',self.hide,'Hide to tray'),('maximize',self.toggle_maximize,'Maximize / restore'),('minimize',self.root.iconify,'Minimize')]:
             self.window_button(controls,kind,cmd,tip).pack(side='right')
-        brand=tk.Frame(head,bg=bg);brand.pack(side='left',padx=20,pady=(16,0))
+        brand=tk.Frame(head,bg=bg);brand.pack(side='left',padx=CONTENT_PAD,pady=(22,0))
         self.logo=ImageTk.PhotoImage(load_icon(32).resize((28,28),Image.Resampling.LANCZOS),master=self.root)
         logo=tk.Label(brand,image=self.logo,bg=bg);logo.pack(side='left')
-        name=tk.Label(brand,text='Codex',font=('Segoe UI',11),fg='#222426',bg=bg);name.pack(side='left',padx=9)
+        name=tk.Label(brand,text='Codex',font=('Segoe UI',12),fg='#222426',bg=bg);name.pack(side='left',padx=9)
         for widget in (head,brand,logo,name):
             widget.bind('<ButtonPress-1>',self.drag_window)
             widget.bind('<B1-Motion>',self.drag_motion)
             widget.bind('<ButtonRelease-1>',self.end_drag)
             widget.bind('<Double-Button-1>',lambda event:self.toggle_maximize())
-        holder=tk.Frame(self.root,bg=bg); holder.pack(fill='both',expand=True,padx=20)
+        holder=tk.Frame(self.root,bg=bg); holder.pack(fill='both',expand=True,padx=CONTENT_PAD)
         self.canvas=tk.Canvas(holder,bg=bg,highlightthickness=0,bd=0)
         self.canvas.pack(side='left',fill='both',expand=True)
         self.body=tk.Frame(self.canvas,bg=bg); self.body_window=self.canvas.create_window((0,0),window=self.body,anchor='nw')
@@ -487,7 +489,7 @@ class App:
             self.canvas.configure(scrollregion=self.canvas.bbox('all'))
         self.body.bind('<Configure>',adjust)
         self.root.bind_all('<MouseWheel>',lambda e:self.canvas.yview_scroll(int(-e.delta/120),'units'))
-        self.status=tk.Label(self.root,text='',font=('Segoe UI',8),fg='#8a8c8f',bg=bg,anchor='w'); self.status.pack(fill='x',padx=20,pady=(5,10))
+        self.status=tk.Label(self.root,text='',font=('Segoe UI',9),fg='#8a8c8f',bg=bg,anchor='w'); self.status.pack(fill='x',padx=CONTENT_PAD,pady=(8,18))
         self.status_tooltip=Tooltip(self.status,lambda:self.status_detail if self.status_detail else 'Latest refresh result')
         self.status_detail=self.data.get('details','')
     def window_button(self,parent,kind,command,tip):
@@ -506,7 +508,7 @@ class App:
         Tooltip(button,tip)
         return button
 
-    def label(self,parent,text,size=10,color='#777b80',font='Segoe UI',bold=False,**kw):
+    def label(self,parent,text,size=11,color='#777b80',font='Segoe UI',bold=False,**kw):
         return tk.Label(parent,text=text,bg=self.bg,fg=color,font=(font,size,'bold' if bold else 'normal'),**kw)
     def draw(self):
         # Build off-screen while the current page stays intact, then swap once.
@@ -526,52 +528,52 @@ class App:
         for index,window in enumerate(windows or [None]):
             line=tk.Frame(self.body,bg=self.bg); line.pack(fill='x',pady=(0,10))
             text=f"{remaining_percent(window['usedPercent']):g}% remaining" if window else 'Usage unavailable'
-            self.label(line,text,15,'#222426',anchor='w').pack(side='left')
+            self.label(line,text,16,'#222426',anchor='w').pack(side='left')
             if index==0:
                 for symbol,command,tip in [('⚙',self.settings_dialog,'Settings'),('↻',self.refresh,'Refresh')]:
-                    button=tk.Button(line,text=symbol,command=command,font=('Segoe UI Symbol',14),relief='flat',bd=0,bg=self.bg,fg='#72797d',activebackground='#f2f4f3',cursor='hand2',padx=5,takefocus=False)
+                    button=tk.Button(line,text=symbol,command=command,font=('Segoe UI Symbol',15),relief='flat',bd=0,bg=self.bg,fg='#72797d',activebackground='#f2f4f3',cursor='hand2',padx=5,takefocus=False)
                     button.pack(side='right',padx=2);Tooltip(button,tip)
         u=self.data.get('usage',{}); cols=tk.Frame(self.body,bg=self.bg); cols.pack(fill='x')
         for index,(title,key,cost) in enumerate([('This month','month_tokens','month_cost'),('All time','total_tokens','total_cost')]):
             cols.columnconfigure(index,weight=1,uniform='totals')
             f=tk.Frame(cols,bg=self.bg); f.grid(row=0,column=index,sticky='ew')
-            self.label(f,title,9,anchor='w').pack(fill='x')
+            self.label(f,title,10,anchor='w').pack(fill='x')
             n=u.get(key); n=(n+self.settings['reserve']) if n is not None and key=='total_tokens' else n
-            self.label(f,f'{n:,}' if n is not None else '—',12,'#292d30',font='Consolas',anchor='w').pack(fill='x',pady=(3,1))
-            c=u.get(cost); price=self.label(f,f'${c:,.2f}' if c is not None else '—',10,'#73777b',anchor='w'); price.pack(fill='x')
+            self.label(f,f'{n:,}' if n is not None else '—',13,'#292d30',font='Consolas',anchor='w').pack(fill='x',pady=(3,1))
+            c=u.get(cost); price=self.label(f,f'${c:,.2f}' if c is not None else '—',11,'#73777b',anchor='w'); price.pack(fill='x')
             Tooltip(price,'Estimated API-equivalent cost (USD)')
         d=self.data.get('delta')
-        delta=self.label(self.body,f'{d:+,} tokens' if d is not None else '—',9,'#185c40',anchor='w')
+        delta=self.label(self.body,f'{d:+,} tokens' if d is not None else '—',10,'#185c40',anchor='w')
         delta.pack(fill='x',pady=(7,10)); Tooltip(delta,delta_tooltip(self.data) if d is not None else 'Available after the next successful refresh')
         tk.Frame(self.body,bg='#e9eaec',height=1).pack(fill='x')
-        self.label(self.body,'Speed',11,'#292d30',anchor='w').pack(fill='x',pady=(9,5))
+        self.label(self.body,'Speed',12,'#292d30',anchor='w').pack(fill='x',pady=(11,7))
         speed=self.data.get('speed',{})
         for days in ('1','14'):
             period=tk.Frame(self.body,bg=self.bg);period.pack(fill='x',pady=(6,7))
-            tk.Label(period,text='14 days' if days=='14' else '1 day',font=('Segoe UI Semibold',10),fg='#41564b',bg='#f0f4f1',padx=8,pady=2).pack(side='left')
+            tk.Label(period,text='14 days' if days=='14' else '1 day',font=('Segoe UI Semibold',11),fg='#41564b',bg='#f0f4f1',padx=8,pady=2).pack(side='left')
             grid=tk.Frame(self.body,bg=self.bg); grid.pack(fill='x',pady=(0,6))
             for i,v in enumerate(['Model','Normal','Fast','Ratio']):
-                self.label(grid,v,8,'#989b9e',anchor='w' if i==0 else 'e').grid(row=0,column=i,sticky='ew',pady=(0,2))
+                self.label(grid,v,9,'#989b9e',anchor='w' if i==0 else 'e').grid(row=0,column=i,sticky='ew',pady=(0,2))
                 grid.columnconfigure(i,weight=4 if i==0 else 1)
             rows=speed.get(days,[])
             for idx,row in enumerate(rows,1):
                 values=[row['model'],row['normal'].strip('()~*†'),row['fast'].strip('()~*†'),row['ratio'].strip('()~*†')]
                 for col,val in enumerate(values):
-                    label=self.label(grid,val,9,ratio_color(row['ratio']) if col==3 else '#353a3e',font='Consolas',anchor='w' if col==0 else 'e')
+                    label=self.label(grid,val,10,ratio_color(row['ratio']) if col==3 else '#353a3e',font='Consolas',anchor='w' if col==0 else 'e')
                     label.grid(row=idx,column=col,sticky='ew',pady=1)
                     if col in (1,2):
                         mode='normal' if col==1 else 'fast'; count=row[mode+'_n']
                         Tooltip(label,f"{val} effective tokens/s\nApproximately {count} timed responses" if val not in ('·','—') else 'No timed responses')
                     elif col==3:
                         Tooltip(label,'Fast ÷ Normal'+ ('\nLimited sample size' if '(' in row['ratio'] else ''))
-            if not rows: self.label(grid,'No available samples',9,anchor='w').grid(row=1,column=0,columnspan=4,sticky='w')
+            if not rows: self.label(grid,'No available samples',10,anchor='w').grid(row=1,column=0,columnspan=4,sticky='w')
         if not self.busy: self.status.config(text=self.data.get('status','Ready'))
         self.status_detail=self.data.get('details','')
     def build_sources(self,parent):
         footer=tk.Frame(parent,bg=self.bg); footer.pack(fill='x',pady=(14,18))
         tk.Frame(footer,bg='#e9eaec',height=1).pack(fill='x',pady=(0,12))
-        self.label(footer,'Sources & components',9,anchor='w').pack(fill='x')
-        self.label(footer,'Checks latest tools on refresh; falls back when unavailable.',8,anchor='w',wraplength=390,justify='left').pack(fill='x',pady=(4,8))
+        self.label(footer,'Sources & components',10,anchor='w').pack(fill='x')
+        self.label(footer,'Checks latest tools on refresh; falls back when unavailable.',9,anchor='w',wraplength=SETTINGS_WRAP,justify='left').pack(fill='x',pady=(4,8))
         components=tk.Frame(footer,bg=self.bg);components.pack(fill='x')
         for index,(title,url) in enumerate([
             ('codex-speed · speed calculations','https://gist.github.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635'),
@@ -583,45 +585,46 @@ class App:
             ('Rich · speed tool formatting','https://github.com/Textualize/rich'),
             ('joblib · speed tool runtime','https://github.com/joblib/joblib'),
             ('orjson · fast JSON decoding','https://github.com/ijl/orjson')]):
-            link=self.label(components,title,8,'#73777b',anchor='w',cursor='hand2',wraplength=195,justify='left')
+            link=self.label(components,title,9,'#73777b',anchor='w',cursor='hand2',wraplength=215,justify='left')
             link.grid(row=index//2,column=index%2,sticky='nw',padx=(0,12),pady=3)
             link.bind('<Button-1>',lambda event,address=url:webbrowser.open(address))
         tk.Frame(footer,bg='#e9eaec',height=1).pack(fill='x',pady=(14,12))
-        self.label(footer,'Codex Meter · v'+VERSION,9,anchor='w').pack(fill='x')
-        project=self.label(footer,REPOSITORY,8,'#185c40',anchor='w',cursor='hand2',wraplength=405,justify='left')
+        self.label(footer,'Codex Meter · v'+VERSION,10,anchor='w').pack(fill='x')
+        project=self.label(footer,REPOSITORY,9,'#185c40',anchor='w',cursor='hand2',wraplength=SETTINGS_WRAP,justify='left')
         project.pack(fill='x',pady=(5,7));project.bind('<Button-1>',lambda event:webbrowser.open(REPOSITORY))
-        self.label(footer,'Open source · MIT license. Contributions welcome. Help add token usage, costs and speed for more coding agents and AI agents.',9,anchor='w',wraplength=405,justify='left').pack(fill='x')
+        self.label(footer,'Open source · MIT license. Contributions welcome. Help add token usage, costs and speed for more coding agents and AI agents.',10,anchor='w',wraplength=SETTINGS_WRAP,justify='left').pack(fill='x')
     def settings_dialog(self):
         if getattr(self,'settings_window',None) is not None and self.settings_window.winfo_exists():
             self.settings_window.lift();return
         win=tk.Toplevel(self.root);win.withdraw()
         win.title('Settings'); win.configure(bg=self.bg); win.resizable(False,False); win.transient(self.root)
         self.settings_window=win
-        box=tk.Frame(win,bg=self.bg); box.pack(padx=24,pady=22)
-        self.label(box,'Refresh interval',10,anchor='w').grid(row=0,column=0,sticky='w',pady=6)
+        box=tk.Frame(win,bg=self.bg); box.pack(padx=30,pady=26)
+        self.label(box,'Refresh interval',11,anchor='w').grid(row=0,column=0,sticky='w',pady=6)
         v=tk.StringVar(value='Manual' if not self.settings['interval'] else f"{self.settings['interval']} hours")
-        ttk.Combobox(box,textvariable=v,values=['Manual','2 hours','4 hours','6 hours','8 hours','12 hours'],state='readonly',width=18).grid(row=0,column=1,padx=(20,0))
-        self.label(box,'Reserve adjustment (tokens)',10,anchor='w').grid(row=1,column=0,sticky='w',pady=6)
-        r=tk.StringVar(value=str(self.settings['reserve'])); ttk.Entry(box,textvariable=r,width=21).grid(row=1,column=1,padx=(20,0))
+        ttk.Combobox(box,textvariable=v,values=['Manual','2 hours','4 hours','6 hours','8 hours','12 hours'],state='readonly',width=18,font=('Segoe UI',10)).grid(row=0,column=1,padx=(20,0))
+        self.label(box,'Reserve adjustment (tokens)',11,anchor='w').grid(row=1,column=0,sticky='w',pady=6)
+        r=tk.StringVar(value=str(self.settings['reserve'])); ttk.Entry(box,textvariable=r,width=21,font=('Segoe UI',10)).grid(row=1,column=1,padx=(20,0))
         reserve_help = (
-            'Manually fills a token gap when local logs capture only part of your '
-            'gpt-reserve usage. Some reserve tokens are already counted.\n\n'
+            'Fills gaps in locally recorded gpt-reserve tokens. Some reserve '
+            'usage is already counted.\n\n'
             'OpenAI describes Luna Reserve as GPT-5.6 Luna. ccusage uses that '
-            'model to price gpt-reserve; this does not verify the actual routed '
-            'model or recover missing token records.\n\n'
-            'If OpenAI provides a comparable token total, enter the difference '
-            'from your raw logged total, before this adjustment. Match the '
-            'account, devices and time period. Added once to all-time tokens '
-            'only; monthly tokens and USD stay unchanged. Set 0 for no adjustment.'
+            'alias for pricing; it cannot verify backend routing or recover '
+            'missing records.\n\n'
+            'If you have a comparable official token total, subtract the raw '
+            'logged total for the same account, devices and period. Enter that '
+            'gap here. Added once to all-time tokens only, not monthly tokens '
+            'or USD. Set 0 for no adjustment.'
         )
-        self.label(box,reserve_help,9,anchor='w',wraplength=405,justify='left').grid(row=2,column=0,columnspan=2,sticky='w',pady=8)
+        self.label(box,reserve_help,10,anchor='w',wraplength=SETTINGS_WRAP,justify='left').grid(row=2,column=0,columnspan=2,sticky='w',pady=8)
         def apply():
             try:
                 num=int(r.get().replace(',',''))
                 if num<0: raise ValueError()
             except ValueError: messagebox.showerror('Settings','Enter a non-negative whole number.',parent=win); return
             self.settings={'interval':0 if v.get()=='Manual' else int(v.get().split()[0]),'reserve':num}; save(CONFIG,self.settings); self.schedule(); self.draw(); win.destroy()
-        ttk.Button(box,text='Save',command=apply).grid(row=3,column=1,sticky='e',pady=(10,0))
+        ttk.Style(win).configure('Meter.TButton',font=('Segoe UI',10),padding=(10,4))
+        ttk.Button(box,text='Save',command=apply,style='Meter.TButton').grid(row=3,column=1,sticky='e',pady=(10,0))
         sources=tk.Frame(box,bg=self.bg);sources.grid(row=4,column=0,columnspan=2,sticky='ew')
         self.build_sources(sources)
         win.update_idletasks()
