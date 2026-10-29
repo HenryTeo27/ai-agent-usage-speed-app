@@ -4,11 +4,11 @@ A small Windows desktop meter for Codex usage and speed. Close it to the notific
 
 ![Codex Meter desktop app with demo usage and speed data](docs/screenshot.png)
 
-*App screenshot with synthetic demo data. The latest layout removes the title bar, uses rounded corners, and places Refresh / Settings beside the remaining allowance. Source credits are in Settings.*
+*App screenshot with synthetic demo data. The layout removes the title bar, uses rounded corners, and places Refresh / Settings beside the remaining allowance.*
 
 The current interface uses slightly larger text and wider outer padding. The window starts at 500 pixels wide and fits the current 1-day speed table with a little bottom space. Scroll down to see 14 days. Refresh does not resize the window. Side margins remain 28 pixels; muted gray window controls stay flush with the top-right edge. Period badges have pill corners and the window uses a larger corner radius.
 
-The app follows Windows' **default app mode** automatically, including Custom mode. Dark mode uses charcoal surfaces, lighter text and readable green, amber and red values. Settings, inputs and menus follow the theme too. Switching themes preserves the latest data and unsaved Settings input, without restarting or scanning logs.
+Appearance in Settings offers **System**, **Light** and **Dark**. System follows Windows' default app mode, including Custom mode. Light and Dark remain selected when Windows changes theme. Dark mode uses charcoal surfaces, lighter text and readable green, amber and red values. Switching appearance does not restart the app or scan logs.
 
 The desktop shortcut, taskbar, tray, window and page header all use the same blue-purple gradient logo. The logo does not change with the theme. Its background and terminal cutouts use real alpha transparency, with no white box or checkerboard. The installer updates matching pinned shortcuts too. The selected PNG and multi-size ICO are in `assets/`.
 
@@ -29,11 +29,11 @@ Python and the speed tool's libraries are included in the release. codex-speed i
 
 - Drag the Codex header to move the rounded window. Minimize, maximize/restore and close are in the page header; close hides it to the tray.
 - **↻** refreshes usage, account limits and speed. Previous results stay visible while scanning.
-- **⚙** selects manual refresh or every 2, 4, 6, 8 or 12 hours. It also sets the all-time token adjustment.
+- **⚙** selects Appearance, manual refresh or every 2, 4, 6, 8 or 12 hours, and the all-time token adjustment. Dropdown choices save immediately. Valid token edits save after a short pause and are also saved when closing Settings or quitting. Save remains available.
 - Only one app window runs at a time. Opening another copy restores the existing window, including one hidden in the tray.
 - Closing the window hides it in the notification area. Use **Open**, **Refresh** or **Quit** from the tray menu.
 - Hover over speed values for units and sample counts. Hover over the green token change for “Since Last Refresh” and the previous/current raw totals. Each successful usage response becomes the next baseline immediately, even while speed or account queries are pending. Manual and automatic refresh use the same baseline. A previous +150,000,000 followed by only 200,000 new tokens displays +200,000; the old increase is never added again.
-- The 1-day speed table appears above the 14-day table. Sources & components are listed at the bottom of Settings. There is no visible scrollbar on the main window.
+- The 1-day speed table appears above the 14-day table. Settings ends with version and project details, without a provider list. There is no visible scrollbar on the main window.
 - The app does not start with Windows. Scheduled scans run while it is open or in the tray. Opening recent results shows the saved values immediately. Upgrading alone does not trigger a scan; scheduled refresh runs only when due.
 
 ## Install with Codex or from source
@@ -73,6 +73,8 @@ If OpenAI provides a comparable token total, subtract the raw logged all-time to
 Each refresh asks npm for the latest ccusage and downloads the latest upstream codex-speed script. The temporary speed copy receives a Windows timezone compatibility fix. A successful speed script is kept as an offline fallback; an existing local codex-speed installation can also serve as fallback. If latest tools are unavailable or incompatible, the status reports the fallback or failure. The app does not claim an older fallback is the latest version. Tool updates run upstream third-party code. Updating Codex itself and updating Codex Meter are separate steps.
 
 ## Storage and resource use
+
+Settings and the last displayed snapshot live in the Windows per-user Local AppData folder, resolved through the Windows Known Folder API. Desktop launches, source runs and packaged runs share this location. Quit flushes valid Settings edits and the latest displayed data before closing; an empty session does not erase an existing snapshot. File operations retry brief access locks. A failed read or save is reported instead of silently treating it as a successful reset. Only the latest settings and snapshot are kept.
 
 The app retains settings, one latest snapshot, and one working speed-tool script. It does not keep a scan history or copy chat content. Speed CSVs and parse caches are temporary and deleted after scans. Existing Codex logs are read in place. npm maintains its normal package cache. No telemetry or chat upload is implemented. npm, the speed download and ccusage pricing resolution may access the network; the Codex account query uses Codex's existing sign-in.
 
@@ -121,6 +123,8 @@ Workers skip GUI libraries. Small ICO frames replace the full-size tray bitmap. 
 The window is built from the saved snapshot before it becomes visible. Opening the desktop shortcut restores an already-ready instance instead of exposing a partially built page. The title-strip customization uses native Windows styles and does not install Python window-procedure callbacks. Desktop reopening locates the marked main window rather than matching its title, so a tooltip cannot be mistaken for the app. Tooltips are cleared when hiding to the tray.
 
 Each successful usage, limits or speed result is saved before it is displayed. All results replace the same `snapshot.json`; no refresh history is kept. Writes flush to disk and atomically replace the file, so an interrupted replacement leaves the previous valid snapshot intact. Failed sources keep their previous results. Opening a cached version after an upgrade does not require a new scan.
+
+To check quit/reopen behavior without visible windows or personal data, run `python scripts/check-persistence.py`. Use `--exe C:\path\to\CodexMeter.exe` to check the frozen application. The helper uses two independent processes and a temporary `CODEX_METER_DATA_DIR`, verifies cached page labels and settings without pressing Save, then removes its test data.
 
 ## Header dragging in v1.0.7
 

@@ -8,6 +8,13 @@ import system_theme
 
 
 class ThemeTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        folder=tempfile.TemporaryDirectory();self.addCleanup(folder.cleanup)
+        for name in ('CONFIG','SNAPSHOT'):
+            patcher=patch.object(meter,name,Path(folder.name)/(name.lower()+'.json'))
+            patcher.start();self.addCleanup(patcher.stop)
     def test_compact_height_larger_corners_and_muted_controls(self):
         meter.load_gui()
         with patch.object(meter.App,'show'),patch.object(meter.App,'setup_tray'),patch.object(meter.App,'refresh'),patch.object(meter.App,'schedule'),patch.object(meter.App,'publish_ready'):
@@ -73,7 +80,7 @@ class ThemeTests(unittest.TestCase):
                     window=app.settings_window
                     box=window.winfo_children()[0]
                     entry=next(w for w in box.winfo_children() if isinstance(w,meter.ttk.Entry) and not isinstance(w,meter.ttk.Combobox))
-                    combo=next(w for w in box.winfo_children() if isinstance(w,meter.ttk.Combobox))
+                    combo=next(w for w in box.winfo_children() if isinstance(w,meter.ttk.Combobox) and 'Manual' in w.cget('values'))
                     entry.delete(0,'end');entry.insert(0,'123456');combo.set('Manual')
                     data=app.data;body=app.body;app.busy=True;app.pending={'speed'}
                     for dark in (True,False,True,initial):

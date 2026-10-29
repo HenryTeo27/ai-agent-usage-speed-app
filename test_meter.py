@@ -170,11 +170,11 @@ class SettingsTests(InvisibleGuiTests):
                     project.event_generate('<Button-1>');app.root.update()
                     browser.assert_called_once_with(meter.REPOSITORY)
                 self.assertLessEqual(window.winfo_y()+window.winfo_height(),window.winfo_screenheight()-90)
-                interval=next(widget for widget in widgets if isinstance(widget,meter.ttk.Combobox))
+                interval=next(widget for widget in widgets if isinstance(widget,meter.ttk.Combobox) and 'Manual' in widget.cget('values'))
                 reserve=next(widget for widget in widgets if isinstance(widget,meter.ttk.Entry) and not isinstance(widget,meter.ttk.Combobox))
                 interval.set('4 hours');reserve.delete(0,'end');reserve.insert(0,'1,234')
                 next(widget for widget in widgets if isinstance(widget,meter.ttk.Button) and widget.cget('text')=='Save').invoke()
-                self.assertEqual(app.settings,{'interval':4,'reserve':1234})
+                self.assertEqual(app.settings,{'interval':4,'reserve':1234,'appearance':'system'})
                 self.assertEqual(meter.read(meter.CONFIG,{}),app.settings)
                 self.assertIsNotNone(app.job)
             finally:

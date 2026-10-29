@@ -13,7 +13,25 @@ ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 sys.path.insert(0, str(ROOT / 'vendor'))
 sys.path.insert(0, str(ROOT / 'build_vendor'))
 
-DATA = Path(os.environ['LOCALAPPDATA']) / 'CodexMeter'
+def state_directory():
+    """Resolve the same per-user folder from Explorer, terminals and packaged runs."""
+    if os.environ.get('CODEX_METER_DATA_DIR'):
+        return Path(os.environ['CODEX_METER_DATA_DIR']).expanduser().resolve()
+    if os.name=='nt':
+        import ctypes,uuid
+        from ctypes import wintypes
+        folder=(ctypes.c_ubyte*16).from_buffer_copy(uuid.UUID('f1b32785-6fba-4fcf-9d55-7b8e7f157091').bytes_le)
+        pointer=ctypes.c_void_p()
+        shell=ctypes.windll.shell32
+        shell.SHGetKnownFolderPath.argtypes=[ctypes.c_void_p,wintypes.DWORD,wintypes.HANDLE,ctypes.POINTER(ctypes.c_void_p)]
+        if shell.SHGetKnownFolderPath(ctypes.byref(folder),0,None,ctypes.byref(pointer))==0:
+            try: return Path(ctypes.wstring_at(pointer))/'CodexMeter'
+            finally:
+                ctypes.windll.ole32.CoTaskMemFree.argtypes=[ctypes.c_void_p]
+                ctypes.windll.ole32.CoTaskMemFree(pointer)
+    return Path(os.environ.get('LOCALAPPDATA',Path.home()/'AppData/Local'))/'CodexMeter'
+
+DATA = state_directory()
 CONFIG = DATA / 'settings.json'
 SNAPSHOT = DATA / 'snapshot.json'
 SPEED = Path.home() / '.codex/bin/codex-speed/codex_speed.py'
@@ -21,16 +39,17 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.15'
+VERSION = '1.0.16'
 REPOSITORY = 'https://github.com/HenryTeo27/ai-agent-usage-speed-app'
 CONTENT_PAD = 28
 SETTINGS_WRAP = 450
-DEFAULT = {'interval': 6, 'reserve': 600000000}
+DEFAULT = {'interval': 6, 'reserve': 600000000, 'appearance':'system'}
 CACHED_SPEED = DATA / 'tools' / 'codex_speed.py'
 
 ACTIVE_PROCESSES = set()
 PROCESS_LOCK = threading.Lock()
 STOP_EVENT = threading.Event()
+STATE_READ_ERRORS = {}
 
 # Light colors are stable semantic keys shared by existing widgets and hover handlers.
 DARK_COLORS = {
@@ -89,8 +108,18 @@ def cancel_scans():
 
 
 def read(path, fallback):
-    try: return json.loads(path.read_text(encoding='utf-8-sig'))
-    except (OSError, ValueError): return fallback
+    for attempt in range(3):
+        try:
+            data=json.loads(path.read_text(encoding='utf-8-sig'))
+            STATE_READ_ERRORS.pop(str(path),None)
+            return data
+        except FileNotFoundError: return fallback
+        except PermissionError as exc:
+            if attempt==2:
+                STATE_READ_ERRORS[str(path)]=str(exc);return fallback
+            time.sleep(0.05)
+        except (OSError, ValueError) as exc:
+            STATE_READ_ERRORS[str(path)]=str(exc);return fallback
 
 def save(path,data):
     """Replace one durable snapshot; interrupted writes never truncate the old one."""
@@ -102,7 +131,12 @@ def save(path,data):
                                          prefix='.'+path.stem+'-',suffix='.tmp',delete=False) as stream:
             temporary=Path(stream.name)
             stream.write(content);stream.flush();os.fsync(stream.fileno())
-        os.replace(temporary,path)
+        for attempt in range(4):
+            try:
+                os.replace(temporary,path);STATE_READ_ERRORS.pop(str(path),None);break
+            except PermissionError:
+                if attempt==3: raise
+                time.sleep(0.05)
     finally:
         if temporary is not None: temporary.unlink(missing_ok=True)
 
@@ -110,6 +144,16 @@ def save(path,data):
 def load_snapshot():
     data=read(SNAPSHOT,{})
     return data if isinstance(data,dict) else {}
+
+
+def load_settings():
+    saved=read(CONFIG,{})
+    if not isinstance(saved,dict): saved={}
+    settings=dict(DEFAULT)
+    if saved.get('interval') in (0,2,4,6,8,12): settings['interval']=saved['interval']
+    if type(saved.get('reserve')) is int and saved['reserve']>=0: settings['reserve']=saved['reserve']
+    if saved.get('appearance') in ('system','light','dark'): settings['appearance']=saved['appearance']
+    return settings
 
 
 def apply_usage_result(data,value,previous,observed_at):
@@ -337,9 +381,13 @@ class Tooltip:
 class App:
     def __init__(self):
         load_gui()
-        self.dark=system_dark()
+        self.settings=load_settings();self.dark=self.appearance_dark()
         self.dirty=False;self._show_job=None
-        self.settings={**DEFAULT, **read(CONFIG,{})}; self.data=load_snapshot(); self.busy=False; self.closed=False; self.job=None; self.results=queue.Queue()
+        self.data=load_snapshot(); self.busy=False; self.closed=False; self.job=None; self.results=queue.Queue()
+        self.storage_errors=[STATE_READ_ERRORS[str(path)] for path in (CONFIG,SNAPSHOT) if str(path) in STATE_READ_ERRORS]
+        if self.storage_errors:
+            self.data['status']='Could not read saved data or settings'
+            self.data['details']='\n'.join(self.storage_errors)
         if self.data.get('status','').startswith('Updated '):
             self.data['status']=re.sub(r'\s*·\s*\d+(?:\.\d+)?s(?=\s*·|$)','',self.data['status'])
         self.root=tk.Tk(); self.root.withdraw(); self.root.attributes('-alpha',0)
@@ -536,6 +584,7 @@ class App:
 
     def sync_theme(self,dark):
         if self.closed: return
+        dark=self.appearance_dark(dark)
         if self.dark==dark: return
         old=self.dark;self.dark=dark;self.bg=self.color('#ffffff')
         changes={theme_color(value,old):theme_color(value,dark) for value in DARK_COLORS}
@@ -555,6 +604,11 @@ class App:
         recolor(self.root);self.configure_ttk();self.theme_caption(self.root)
         window=getattr(self,'settings_window',None)
         if window is not None and window.winfo_exists(): self.theme_caption(window)
+
+    def appearance_dark(self,system_value=None):
+        mode=self.settings.get('appearance','system')
+        if mode!='system': return mode=='dark'
+        return system_dark() if system_value is None else system_value
 
     def build(self):
         bg=self.color('#ffffff'); self.bg=bg
@@ -686,26 +740,9 @@ class App:
             if not rows: self.label(grid,'No available samples',10,anchor='w').grid(row=1,column=0,columnspan=4,sticky='w')
         if not self.busy: self.status.config(text=self.data.get('status','Ready'))
         self.status_detail=self.data.get('details','')
-    def build_sources(self,parent):
-        footer=tk.Frame(parent,bg=self.bg); footer.pack(fill='x',pady=(14,18))
+    def build_about(self,parent):
+        footer=tk.Frame(parent,bg=self.bg);footer.pack(fill='x',pady=(14,0))
         tk.Frame(footer,bg=self.color('#e9eaec'),height=1).pack(fill='x',pady=(0,12))
-        self.label(footer,'Sources & components',10,anchor='w').pack(fill='x')
-        self.label(footer,'Checks latest tools on refresh; falls back when unavailable.',9,anchor='w',wraplength=SETTINGS_WRAP,justify='left').pack(fill='x',pady=(4,8))
-        components=tk.Frame(footer,bg=self.bg);components.pack(fill='x')
-        for index,(title,url) in enumerate([
-            ('codex-speed · speed calculations','https://gist.github.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635'),
-            ('ccusage / Codex · tokens & cost','https://github.com/ccusage/ccusage'),
-            ('OpenAI Codex · account limits & local logs','https://github.com/openai/codex'),
-            ('Python / Tk · desktop interface','https://www.python.org/'),
-            ('pystray · tray icon','https://github.com/moses-palmer/pystray'),
-            ('Pillow · icons','https://python-pillow.org/'),
-            ('Rich · speed tool formatting','https://github.com/Textualize/rich'),
-            ('joblib · speed tool runtime','https://github.com/joblib/joblib'),
-            ('orjson · fast JSON decoding','https://github.com/ijl/orjson')]):
-            link=self.label(components,title,9,'#73777b',anchor='w',cursor='hand2',wraplength=215,justify='left')
-            link.grid(row=index//2,column=index%2,sticky='nw',padx=(0,12),pady=3)
-            link.bind('<Button-1>',lambda event,address=url:webbrowser.open(address))
-        tk.Frame(footer,bg=self.color('#e9eaec'),height=1).pack(fill='x',pady=(14,12))
         self.label(footer,'Codex Meter · v'+VERSION,10,anchor='w').pack(fill='x')
         project=self.label(footer,REPOSITORY,9,'#185c40',anchor='w',cursor='hand2',wraplength=SETTINGS_WRAP,justify='left')
         project.pack(fill='x',pady=(5,7));project.bind('<Button-1>',lambda event:webbrowser.open(REPOSITORY))
@@ -714,17 +751,25 @@ class App:
         if getattr(self,'settings_window',None) is not None and self.settings_window.winfo_exists():
             self.settings_window.lift();return
         win=tk.Toplevel(self.root);win.withdraw()
-        win.title('Settings'); win.configure(bg=self.bg); win.resizable(False,False); win.transient(self.root)
+        win.title('Settings');win.configure(bg=self.bg);win.resizable(False,False);win.transient(self.root)
         self.settings_window=win
-        box=tk.Frame(win,bg=self.bg); box.pack(padx=30,pady=26)
-        self.label(box,'Refresh interval',11,anchor='w').grid(row=0,column=0,sticky='w',pady=6)
+        box=tk.Frame(win,bg=self.bg);box.pack(padx=30,pady=26)
+        a=tk.StringVar(value=self.settings.get('appearance','system').title())
         v=tk.StringVar(value='Manual' if not self.settings['interval'] else f"{self.settings['interval']} hours")
-        interval=ttk.Combobox(box,textvariable=v,values=['Manual','2 hours','4 hours','6 hours','8 hours','12 hours'],state='readonly',width=18,font=('Segoe UI',10),style='Meter.TCombobox')
-        interval.configure(postcommand=lambda:self.style_dropdown(interval))
-        interval.grid(row=0,column=1,padx=(20,0))
-        self.label(box,'Reserve adjustment (tokens)',11,anchor='w').grid(row=1,column=0,sticky='w',pady=6)
-        r=tk.StringVar(value=str(self.settings['reserve'])); ttk.Entry(box,textvariable=r,width=21,font=('Segoe UI',10),style='Meter.TEntry').grid(row=1,column=1,padx=(20,0))
-        reserve_help = (
+        r=tk.StringVar(value=str(self.settings['reserve']))
+        self.settings_vars={'appearance':a,'interval':v,'reserve':r}
+        self.settings_save_job=None
+        traces=[]
+        for row,(title,variable,values) in enumerate([
+            ('Appearance',a,['System','Light','Dark']),
+            ('Refresh interval',v,['Manual','2 hours','4 hours','6 hours','8 hours','12 hours'])]):
+            self.label(box,title,11,anchor='w').grid(row=row,column=0,sticky='w',pady=6)
+            combo=ttk.Combobox(box,textvariable=variable,values=values,state='readonly',width=18,font=('Segoe UI',10),style='Meter.TCombobox')
+            combo.configure(postcommand=lambda widget=combo:self.style_dropdown(widget))
+            combo.grid(row=row,column=1,padx=(20,0))
+        self.label(box,'Reserve adjustment (tokens)',11,anchor='w').grid(row=2,column=0,sticky='w',pady=6)
+        ttk.Entry(box,textvariable=r,width=21,font=('Segoe UI',10),style='Meter.TEntry').grid(row=2,column=1,padx=(20,0))
+        reserve_help=(
             'Fills gaps in locally recorded gpt-reserve tokens. Some reserve '
             'usage is already counted.\n\n'
             'OpenAI describes Luna Reserve as GPT-5.6 Luna. ccusage uses that '
@@ -735,22 +780,47 @@ class App:
             'gap here. Added once to all-time tokens only, not monthly tokens '
             'or USD. Set 0 for no adjustment.'
         )
-        self.label(box,reserve_help,10,anchor='w',wraplength=SETTINGS_WRAP,justify='left').grid(row=2,column=0,columnspan=2,sticky='w',pady=8)
-        def apply():
+        self.label(box,reserve_help,10,anchor='w',wraplength=SETTINGS_WRAP,justify='left').grid(row=3,column=0,columnspan=2,sticky='w',pady=8)
+        def commit(close=False,quiet=False):
+            if self.settings_save_job is not None:
+                self.root.after_cancel(self.settings_save_job);self.settings_save_job=None
             try:
                 num=int(r.get().replace(',',''))
-                if num<0: raise ValueError()
-            except ValueError: messagebox.showerror('Settings','Enter a non-negative whole number.',parent=win); return
-            self.settings={'interval':0 if v.get()=='Manual' else int(v.get().split()[0]),'reserve':num}; save(CONFIG,self.settings); self.schedule(); self.draw(); win.destroy()
-        ttk.Style(win).configure('Meter.TButton',font=('Segoe UI',10),padding=(10,4))
-        ttk.Button(box,text='Save',command=apply,style='Meter.TButton').grid(row=3,column=1,sticky='e',pady=(10,0))
-        sources=tk.Frame(box,bg=self.bg);sources.grid(row=4,column=0,columnspan=2,sticky='ew')
-        self.build_sources(sources)
+                mode=a.get().lower()
+                interval=0 if v.get()=='Manual' else int(v.get().split()[0])
+                if num<0 or mode not in ('system','light','dark') or interval not in (0,2,4,6,8,12): raise ValueError()
+            except (ValueError,IndexError):
+                if not quiet: messagebox.showerror('Settings','Enter a non-negative whole number.',parent=win)
+                return False
+            updated={'interval':interval,'reserve':num,'appearance':mode}
+            try: save(CONFIG,updated)
+            except OSError as exc:
+                self.status.config(text='Could not save settings');self.status_detail=str(exc)
+                if not quiet: messagebox.showerror('Settings','Could not save settings: '+str(exc),parent=win)
+                return False
+            previous=self.settings;self.settings=updated
+            if previous.get('interval')!=interval: self.schedule()
+            self.sync_theme(system_dark())
+            if previous.get('reserve')!=num: self.draw()
+            if close:
+                for variable,token in traces: variable.trace_remove('write',token)
+                self.close_settings=None;win.destroy()
+            return True
+        def delayed(*args):
+            if self.settings_save_job is not None: self.root.after_cancel(self.settings_save_job)
+            self.settings_save_job=self.root.after(400,lambda:commit(quiet=True))
+        traces.append((a,a.trace_add('write',lambda *args:commit(quiet=True))))
+        traces.append((v,v.trace_add('write',lambda *args:commit(quiet=True))))
+        traces.append((r,r.trace_add('write',delayed)))
+        self.close_settings=lambda:commit(close=True)
+        win.protocol('WM_DELETE_WINDOW',self.close_settings)
+        ttk.Button(box,text='Save',command=self.close_settings,style='Meter.TButton').grid(row=4,column=1,sticky='e',pady=(10,0))
+        about=tk.Frame(box,bg=self.bg);about.grid(row=5,column=0,columnspan=2,sticky='ew')
+        self.build_about(about)
         win.update_idletasks()
         win.geometry(f'+{max(0,min(self.root.winfo_rootx()+20,win.winfo_screenwidth()-win.winfo_reqwidth()))}+'
                      f'{max(0,min(self.root.winfo_rooty()+50,win.winfo_screenheight()-win.winfo_reqheight()-90))}')
-        win.deiconify();win.grab_set()
-        self.theme_caption(win)
+        win.deiconify();win.grab_set();self.theme_caption(win)
     def schedule(self):
         if self.job: self.root.after_cancel(self.job); self.job=None
         if self.settings['interval']: self.job=self.root.after(self.settings['interval']*3600000,self.scheduled)
@@ -839,6 +909,8 @@ class App:
         self.tray=pystray.Icon('Codex Meter',im,'Codex Meter',pystray.Menu(pystray.MenuItem('Open',lambda:self.root.after(0,self.show),default=True),pystray.MenuItem('Refresh',lambda:self.root.after(0,self.refresh)),pystray.MenuItem('Quit',lambda:self.root.after(0,self.quit))))
         self.tray.run_detached()
     def hide(self):
+        close=getattr(self,'close_settings',None)
+        if close is not None and not close(): return
         if self._show_job is not None:
             self.root.after_cancel(self._show_job);self._show_job=None
         for tooltip in list(Tooltip.instances):
@@ -853,6 +925,15 @@ class App:
         if self.root.state() in ('withdrawn','iconic'): self.root.deiconify()
         self.root.lift(); self.root.focus_force()
     def quit(self):
+        close=getattr(self,'close_settings',None)
+        if close is not None and not close(): return
+        try:
+            # Never overwrite a temporarily unreadable file with fallback defaults.
+            if str(CONFIG) not in STATE_READ_ERRORS: save(CONFIG,self.settings)
+            if any(key in self.data for key in ('usage','speed','limits')): save(SNAPSHOT,self.data)
+        except (OSError,ValueError,TypeError) as exc:
+            messagebox.showerror('Codex Meter','Could not save before quitting: '+str(exc),parent=self.root)
+            return
         self.closed=True
         if hasattr(self,'theme_watcher'): self.theme_watcher.stop()
         cancel_scans()
@@ -868,6 +949,8 @@ class App:
 
 def worker_main():
     import runpy
+    # Let internal validation scripts exercise the actual frozen app module.
+    sys.modules['_codex_meter_runtime']=sys.modules[__name__]
     args=sys.argv[1:]
     output_index=args.index('--worker-output')
     output=Path(args[output_index+1]); del args[output_index:output_index+2]
