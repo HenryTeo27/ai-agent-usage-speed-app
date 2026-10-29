@@ -36,7 +36,7 @@ class ThemeTests(unittest.TestCase):
                         self.assertFalse(gdi.PtInRegion(region,1,1))
                         self.assertTrue(gdi.PtInRegion(region,40,40))
                     finally: gdi.DeleteObject(region)
-                with meter.Image.open(meter.ROOT/'assets/codex-taskbar.ico') as source:
+                with meter.Image.open(meter.ROOT/'assets/codex-clean.ico') as source:
                     icon=source.ico.getimage((32,32)).convert('RGBA')
                 self.assertEqual(icon.getpixel((0,0))[3],0)
             finally:
@@ -94,6 +94,9 @@ class ThemeTests(unittest.TestCase):
 
     def test_semantic_colors_and_icon_keep_contrast_and_transparency(self):
         meter.load_gui()
+        with meter.Image.open(meter.ROOT/'assets/codex-clean.ico') as source:
+            clean=source.ico.getimage((256,256)).convert('RGBA')
+        self.assertEqual(clean.getchannel('A').tobytes(),meter.load_icon(256).getchannel('A').tobytes())
         self.assertEqual(len(set(meter.DARK_COLORS.values())),len(meter.DARK_COLORS))
         for color in ('#185c40','#947019','#9b3038'):
             self.assertNotEqual(meter.theme_color(color,True),color)

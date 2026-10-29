@@ -21,7 +21,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.13'
+VERSION = '1.0.14'
 REPOSITORY = 'https://github.com/HenryTeo27/ai-agent-usage-speed-app'
 CONTENT_PAD = 28
 SETTINGS_WRAP = 450

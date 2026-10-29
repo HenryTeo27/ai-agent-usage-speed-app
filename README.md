@@ -10,7 +10,7 @@ The current interface uses slightly larger text and wider outer padding. The win
 
 The app follows Windows' **default app mode** automatically, including Custom mode. Dark mode uses charcoal surfaces, lighter text and readable green, amber and red values. Settings, inputs, menus and window icons follow the theme too. The tray icon follows the taskbar's system mode separately. Switching themes preserves the latest data and unsaved Settings input, without restarting or scanning logs.
 
-Windows can display a pinned shortcut's fixed icon instead of the live window icon. The installer updates this app's desktop, Start menu and matching pinned shortcuts to a transparent dual-tone icon that remains visible on both light and dark backgrounds. Live window and tray icons still adapt to the system theme.
+Windows can display a pinned shortcut's fixed icon instead of the live window icon. The installer updates this app's desktop, Start menu and matching pinned shortcuts to a clean purple line icon with a transparent background. It preserves the original logo shape with no backdrop or extra halo. Live window and tray icons still adapt to the system theme.
 
 Windows [registry change notifications](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regnotifychangekeyvalue) wake a waiting listener when theme preferences change. There is no periodic theme polling. If the preference or notification key cannot be read, startup falls back to light mode; opening from the tray checks the preference again. The app never changes your Windows theme settings.
 

@@ -8,7 +8,7 @@ if (Test-Path -LiteralPath $packaged) {
     Copy-Item -Path (Join-Path $sourceRoot 'CodexMeter\*') -Destination $targetRoot -Recurse -Force
     $launcher = Join-Path $targetRoot 'CodexMeter.exe'
     $arguments = ''
-    $icon = Join-Path $targetRoot '_internal\assets\codex-taskbar.ico'
+    $icon = Join-Path $targetRoot '_internal\assets\codex-clean.ico'
 } else {
     foreach ($file in @('meter.py', 'system_theme.py', 'requirements.txt')) {
         Copy-Item -LiteralPath (Join-Path $sourceRoot $file) -Destination $targetRoot -Force
@@ -29,7 +29,7 @@ if (Test-Path -LiteralPath $packaged) {
     if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
     $launcher = Join-Path $runtime 'Scripts\pythonw.exe'
     $arguments = '"' + (Join-Path $targetRoot 'meter.py') + '"'
-    $icon = Join-Path $targetRoot 'assets\codex-taskbar.ico'
+    $icon = Join-Path $targetRoot 'assets\codex-clean.ico'
 }
 foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
     $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $folder 'Codex Meter.lnk'))
