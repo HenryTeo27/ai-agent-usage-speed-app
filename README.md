@@ -8,6 +8,10 @@ A small Windows desktop meter for Codex usage and speed. Close it to the notific
 
 The current interface uses slightly larger text and wider outer padding. The default window is 500 × 690 pixels, with 28-pixel side margins. Window controls stay flush with the top-right edge.
 
+The app follows Windows' **default app mode** automatically, including Custom mode. Dark mode uses charcoal surfaces, lighter text and readable green, amber and red values. Settings, inputs, menus and window icons follow the theme too. The tray icon follows the taskbar's system mode separately. Switching themes preserves the latest data and unsaved Settings input, without restarting or scanning logs.
+
+Windows [registry change notifications](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regnotifychangekeyvalue) wake a waiting listener when theme preferences change. There is no periodic theme polling. If the preference or notification key cannot be read, startup falls back to light mode; opening from the tray checks the preference again. The app never changes your Windows theme settings.
+
 ## Quick install
 
 1. Download **[Codex-Meter-Windows-x64.zip](https://github.com/HenryTeo27/ai-agent-usage-speed-app/releases/latest/download/Codex-Meter-Windows-x64.zip)** from [Releases](https://github.com/HenryTeo27/ai-agent-usage-speed-app/releases/latest).

@@ -6,6 +6,8 @@ $script = Join-Path $folder 'smoke.py'
 @'
 import argparse, csv, dataclasses, gzip, statistics, zoneinfo
 import joblib, rich, tzdata, orjson, ssl
+from system_theme import system_dark
+assert isinstance(system_dark(), bool)
 ssl.create_default_context()
 from rich.console import Console
 Console().print('runtime-ready')

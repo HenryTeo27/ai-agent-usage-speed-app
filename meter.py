@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import sys, os, json, subprocess, threading, tempfile, re, time, shutil
 from pathlib import Path
 from datetime import datetime
+from system_theme import system_dark, ThemeWatcher
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 sys.path.insert(0, str(ROOT / 'vendor'))
 sys.path.insert(0, str(ROOT / 'build_vendor'))
@@ -20,7 +21,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.10'
+VERSION = '1.0.11'
 REPOSITORY = 'https://github.com/HenryTeo27/ai-agent-usage-speed-app'
 CONTENT_PAD = 28
 SETTINGS_WRAP = 450
@@ -30,6 +31,20 @@ CACHED_SPEED = DATA / 'tools' / 'codex_speed.py'
 ACTIVE_PROCESSES = set()
 PROCESS_LOCK = threading.Lock()
 STOP_EVENT = threading.Event()
+
+# Light colors are stable semantic keys shared by existing widgets and hover handlers.
+DARK_COLORS = {
+    '#ffffff':'#191c20', '#222426':'#eef0f2', '#292d30':'#e5e8eb',
+    '#353a3e':'#d9dfe4', '#777b80':'#aab2bb', '#73777b':'#adb5be',
+    '#8a8c8f':'#929da8', '#989b9e':'#9ca7b2', '#72797d':'#b3bdc7',
+    '#42474b':'#cbd3db', '#e9ecee':'#333a42', '#f2f4f3':'#2c333b',
+    '#e9eaec':'#343c45', '#41564b':'#b8d3c3', '#f0f4f1':'#27382f',
+    '#185c40':'#82cda8', '#947019':'#dfbd73', '#9b3038':'#ec929a',
+}
+
+
+def theme_color(color, dark):
+    return DARK_COLORS.get(color, color) if dark else color
 
 
 def load_gui():
@@ -50,6 +65,14 @@ def load_icon(size):
     # Decode only the small ICO frame, not the full-resolution PNG.
     with Image.open(ROOT/'assets/codex-transparent.ico') as icon:
         return icon.ico.getimage((size,size)).convert('RGBA')
+
+
+def themed_icon(size,dark):
+    icon=load_icon(size)
+    if dark:
+        foreground=Image.new('RGBA',icon.size,'#e5e8eb')
+        foreground.putalpha(icon.getchannel('A'));return foreground
+    return icon
 
 
 def terminate_process(process):
@@ -317,12 +340,14 @@ class Tooltip:
 class App:
     def __init__(self):
         load_gui()
+        self.dark=system_dark()
         self.dirty=False;self._show_job=None
         self.settings={**DEFAULT, **read(CONFIG,{})}; self.data=load_snapshot(); self.busy=False; self.closed=False; self.job=None; self.results=queue.Queue()
         if self.data.get('status','').startswith('Updated '):
             self.data['status']=re.sub(r'\s*·\s*\d+(?:\.\d+)?s(?=\s*·|$)','',self.data['status'])
         self.root=tk.Tk(); self.root.withdraw(); self.root.attributes('-alpha',0)
-        self.root.title('Codex Meter'); self.root.geometry('500x690'); self.root.minsize(460,640); self.root.configure(bg='#ffffff')
+        self.root.title('Codex Meter'); self.root.geometry('500x690'); self.root.minsize(460,640); self.root.configure(bg=self.color('#ffffff'))
+        self.configure_ttk()
         self.root.iconbitmap(str(ROOT/'assets/codex-transparent.ico'))
         self.root.protocol('WM_DELETE_WINDOW',self.hide)
         self.root.bind('<Map>',self.on_map)
@@ -358,6 +383,7 @@ class App:
             user.SetWindowPos.argtypes=[wintypes.HWND,wintypes.HWND,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,wintypes.UINT]
             user.SetWindowPos(hwnd,None,0,0,0,0,0x27)
         self.update_window_shape()
+        self.theme_caption(self.root)
 
     def update_window_shape(self,event=None):
         if os.name!='nt' or not hasattr(self,'window_handle'): return
@@ -433,7 +459,7 @@ class App:
     def toggle_maximize(self):
         self.root.state('normal' if self.root.state()=='zoomed' else 'zoomed')
 
-    def set_native_icons(self):
+    def set_native_icons(self,widget=None):
         """Load icons at the screen's actual pixel sizes, avoiding 16px upscaling."""
         if os.name != 'nt': return
         import ctypes
@@ -446,35 +472,108 @@ class App:
         user.LoadImageW.restype = wintypes.HANDLE
         user.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
         user.SendMessageW.restype = wintypes.LPARAM
-        hwnd = user.GetParent(self.root.winfo_id())
+        hwnd = user.GetParent((widget or self.root).winfo_id())
         user.GetDpiForWindow.argtypes = [wintypes.HWND]
         dpi = user.GetDpiForWindow(hwnd) or 96
-        previous=getattr(self,'native_icons',[])
-        if getattr(self,'native_icon_dpi',None)==dpi and len(previous)==2:
-            icons=previous
-        else:
+        icon_dark=self.dark if widget is not None and widget is not self.root else system_dark('SystemUsesLightTheme')
+        key=(dpi,icon_dark)
+        cache=getattr(self,'native_icon_cache',{})
+        icons=cache.get(key)
+        if icons is None:
             icons=[]
-            for kind,metric in ((0,49),(1,11)):
-                size=user.GetSystemMetricsForDpi(metric,dpi)
-                icons.append(user.LoadImageW(None,str(ROOT/'assets/codex-transparent.ico'),1,size,size,0x10))
+            with tempfile.TemporaryDirectory(prefix='codex-meter-icon-') as folder:
+                path=ROOT/'assets/codex-transparent.ico'
+                if icon_dark:
+                    path=Path(folder)/'dark.ico'
+                    themed_icon(256,True).save(path,format='ICO',sizes=[(n,n) for n in (16,20,24,32,40,48,64,256)])
+                for kind,metric in ((0,49),(1,11)):
+                    size=user.GetSystemMetricsForDpi(metric,dpi)
+                    icons.append(user.LoadImageW(None,str(path),1,size,size,0x10))
         for kind,icon in enumerate(icons):
             if icon: user.SendMessageW(hwnd,0x80,kind,icon)
-        if icons is not previous:
-            user.DestroyIcon.argtypes=[wintypes.HANDLE]
-            for icon in previous:
-                if icon: user.DestroyIcon(icon)
-        self.native_icons=icons;self.native_icon_dpi=dpi
+        # Multiple windows may still reference these handles. Reuse each DPI/theme
+        # pair until process exit rather than destroying another window's icon.
+        cache[key]=icons;self.native_icon_cache=cache
+        self.native_icons=icons;self.native_icon_dpi=key
+
+    def color(self,value): return theme_color(value,self.dark)
+
+    def update_logo(self):
+        self.logo=ImageTk.PhotoImage(themed_icon(32,self.dark).resize((28,28),Image.Resampling.LANCZOS),master=self.root)
+        self.logo_widget.configure(image=self.logo)
+
+    def configure_ttk(self):
+        style=ttk.Style(self.root)
+        if style.theme_use()!='clam': style.theme_use('clam')
+        bg=self.color('#ffffff');fg=self.color('#222426');border=self.color('#e9eaec');hover=self.color('#e9ecee')
+        for name in ('Meter.TEntry','Meter.TCombobox'):
+            style.configure(name,fieldbackground=bg,background=hover,foreground=fg,insertcolor=fg,
+                            bordercolor=border,lightcolor=border,darkcolor=border,arrowcolor=fg)
+            style.map(name,fieldbackground=[('readonly',bg)],foreground=[('readonly',fg)],
+                      selectbackground=[('!disabled',hover)],selectforeground=[('!disabled',fg)])
+        style.configure('Meter.TButton',font=('Segoe UI',10),padding=(10,4),background=bg,foreground=fg,
+                        bordercolor=border,lightcolor=border,darkcolor=border)
+        style.configure('ComboboxPopdownFrame',background=bg,bordercolor=border)
+        style.map('Meter.TButton',background=[('active',hover),('pressed',hover)],foreground=[('active',fg)])
+        for option,value in (('background',bg),('foreground',fg),('selectBackground',hover),('selectForeground',fg)):
+            self.root.option_add('*TCombobox*Listbox.'+option,value)
+
+    def style_dropdown(self,combo):
+        # Tk's combobox popdown is reused, so recolor it when it is opened again.
+        try:
+            popup=self.root.tk.call('ttk::combobox::PopdownWindow',str(combo))
+            self.root.tk.call(str(popup)+'.f.l','configure','-background',self.bg,'-foreground',self.color('#222426'),
+                              '-selectbackground',self.color('#e9ecee'),'-selectforeground',self.color('#222426'))
+        except tk.TclError: pass
+
+    def theme_caption(self,widget):
+        if os.name!='nt': return
+        import ctypes
+        from ctypes import wintypes
+        user=ctypes.windll.user32
+        user.GetParent.argtypes=[wintypes.HWND];user.GetParent.restype=wintypes.HWND
+        hwnd=user.GetParent(widget.winfo_id());dark=ctypes.c_int(self.dark)
+        dwm=ctypes.windll.dwmapi
+        dwm.DwmSetWindowAttribute.argtypes=[wintypes.HWND,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD]
+        if dwm.DwmSetWindowAttribute(hwnd,20,ctypes.byref(dark),ctypes.sizeof(dark))!=0:
+            dwm.DwmSetWindowAttribute(hwnd,19,ctypes.byref(dark),ctypes.sizeof(dark))
+        if widget is not self.root: self.set_native_icons(widget)
+
+    def sync_theme(self,dark):
+        if self.closed: return
+        if hasattr(self,'tray'):
+            tray_dark=system_dark('SystemUsesLightTheme')
+            if getattr(self,'tray_dark',None)!=tray_dark:
+                self.tray.icon=themed_icon(32,tray_dark);self.tray_dark=tray_dark
+                self.set_native_icons()
+        if self.dark==dark: return
+        old=self.dark;self.dark=dark;self.bg=self.color('#ffffff')
+        changes={theme_color(value,old):theme_color(value,dark) for value in DARK_COLORS}
+        def recolor(widget):
+            if isinstance(widget,tk.Toplevel) and widget.title()=='Codex Meter tooltip': return
+            for option in ('background','foreground','activebackground','activeforeground','insertbackground','highlightbackground'):
+                try:
+                    value=str(widget.cget(option)).lower()
+                    if value in changes: widget.configure(**{option:changes[value]})
+                except tk.TclError: pass
+            if isinstance(widget,tk.Canvas) and widget.find_withtag('icon'):
+                widget.configure(bg=self.bg);widget.itemconfigure('icon',fill=self.color('#42474b'))
+            for child in widget.winfo_children(): recolor(child)
+        recolor(self.root);self.configure_ttk();self.update_logo();self.set_native_icons();self.theme_caption(self.root)
+        window=getattr(self,'settings_window',None)
+        if window is not None and window.winfo_exists(): self.theme_caption(window)
 
     def build(self):
-        bg='#ffffff'; self.bg=bg
+        bg=self.color('#ffffff'); self.bg=bg
         head=tk.Frame(self.root,bg=bg); head.pack(fill='x',padx=0,pady=(0,14))
         controls=tk.Frame(head,bg=bg);controls.pack(side='right',anchor='n')
         for kind,cmd,tip in [('close',self.hide,'Hide to tray'),('maximize',self.toggle_maximize,'Maximize / restore'),('minimize',self.root.iconify,'Minimize')]:
             self.window_button(controls,kind,cmd,tip).pack(side='right')
         brand=tk.Frame(head,bg=bg);brand.pack(side='left',padx=CONTENT_PAD,pady=(22,0))
         self.logo=ImageTk.PhotoImage(load_icon(32).resize((28,28),Image.Resampling.LANCZOS),master=self.root)
-        logo=tk.Label(brand,image=self.logo,bg=bg);logo.pack(side='left')
-        name=tk.Label(brand,text='Codex',font=('Segoe UI',12),fg='#222426',bg=bg);name.pack(side='left',padx=9)
+        logo=tk.Label(brand,image=self.logo,bg=bg);logo.pack(side='left');self.logo_widget=logo
+        self.update_logo()
+        name=tk.Label(brand,text='Codex',font=('Segoe UI',12),fg=self.color('#222426'),bg=bg);name.pack(side='left',padx=9)
         for widget in (head,brand,logo,name):
             widget.bind('<ButtonPress-1>',self.drag_window)
             widget.bind('<B1-Motion>',self.drag_motion)
@@ -489,7 +588,7 @@ class App:
             self.canvas.configure(scrollregion=self.canvas.bbox('all'))
         self.body.bind('<Configure>',adjust)
         self.root.bind_all('<MouseWheel>',lambda e:self.canvas.yview_scroll(int(-e.delta/120),'units'))
-        self.status=tk.Label(self.root,text='',font=('Segoe UI',9),fg='#8a8c8f',bg=bg,anchor='w'); self.status.pack(fill='x',padx=CONTENT_PAD,pady=(8,18))
+        self.status=tk.Label(self.root,text='',font=('Segoe UI',9),fg=self.color('#8a8c8f'),bg=bg,anchor='w'); self.status.pack(fill='x',padx=CONTENT_PAD,pady=(8,18))
         self.status_tooltip=Tooltip(self.status,lambda:self.status_detail if self.status_detail else 'Latest refresh result')
         self.status_detail=self.data.get('details','')
     def window_button(self,parent,kind,command,tip):
@@ -497,10 +596,10 @@ class App:
         width,height=round(38*scale),round(40*scale)
         button=tk.Canvas(parent,width=width,height=height,bg=self.bg,bd=0,highlightthickness=0,cursor='arrow',takefocus=True)
         glyph={'close':'\ue8bb','minimize':'\ue921','maximize':'\ue922'}[kind]
-        button.create_text(width/2,height/2,text=glyph,font=('Segoe MDL2 Assets',9),fill='#42474b',anchor='center',tags='icon')
+        button.create_text(width/2,height/2,text=glyph,font=('Segoe MDL2 Assets',9),fill=self.color('#42474b'),anchor='center',tags='icon')
         def hover(active):
-            button.config(bg=('#c42b1c' if kind=='close' else '#e9ecee') if active else self.bg)
-            button.itemconfigure('icon',fill='#ffffff' if active and kind=='close' else '#42474b')
+            button.config(bg=('#c42b1c' if kind=='close' else self.color('#e9ecee')) if active else self.bg)
+            button.itemconfigure('icon',fill='#ffffff' if active and kind=='close' else self.color('#42474b'))
         button.bind('<Enter>',lambda event:hover(True))
         button.bind('<Leave>',lambda event:hover(False))
         button.bind('<ButtonRelease-1>',lambda event:command() if 0<=event.x<width and 0<=event.y<height else None)
@@ -509,7 +608,7 @@ class App:
         return button
 
     def label(self,parent,text,size=11,color='#777b80',font='Segoe UI',bold=False,**kw):
-        return tk.Label(parent,text=text,bg=self.bg,fg=color,font=(font,size,'bold' if bold else 'normal'),**kw)
+        return tk.Label(parent,text=text,bg=self.bg,fg=self.color(color),font=(font,size,'bold' if bold else 'normal'),**kw)
     def draw(self):
         # Build off-screen while the current page stays intact, then swap once.
         previous=self.body
@@ -531,7 +630,7 @@ class App:
             self.label(line,text,16,'#222426',anchor='w').pack(side='left')
             if index==0:
                 for symbol,command,tip in [('⚙',self.settings_dialog,'Settings'),('↻',self.refresh,'Refresh')]:
-                    button=tk.Button(line,text=symbol,command=command,font=('Segoe UI Symbol',15),relief='flat',bd=0,bg=self.bg,fg='#72797d',activebackground='#f2f4f3',cursor='hand2',padx=5,takefocus=False)
+                    button=tk.Button(line,text=symbol,command=command,font=('Segoe UI Symbol',15),relief='flat',bd=0,bg=self.bg,fg=self.color('#72797d'),activebackground=self.color('#f2f4f3'),activeforeground=self.color('#222426'),cursor='hand2',padx=5,takefocus=False)
                     button.pack(side='right',padx=2);Tooltip(button,tip)
         u=self.data.get('usage',{}); cols=tk.Frame(self.body,bg=self.bg); cols.pack(fill='x')
         for index,(title,key,cost) in enumerate([('This month','month_tokens','month_cost'),('All time','total_tokens','total_cost')]):
@@ -545,12 +644,12 @@ class App:
         d=self.data.get('delta')
         delta=self.label(self.body,f'{d:+,} tokens' if d is not None else '—',10,'#185c40',anchor='w')
         delta.pack(fill='x',pady=(7,10)); Tooltip(delta,delta_tooltip(self.data) if d is not None else 'Available after the next successful refresh')
-        tk.Frame(self.body,bg='#e9eaec',height=1).pack(fill='x')
+        tk.Frame(self.body,bg=self.color('#e9eaec'),height=1).pack(fill='x')
         self.label(self.body,'Speed',12,'#292d30',anchor='w').pack(fill='x',pady=(11,7))
         speed=self.data.get('speed',{})
         for days in ('1','14'):
             period=tk.Frame(self.body,bg=self.bg);period.pack(fill='x',pady=(6,7))
-            tk.Label(period,text='14 days' if days=='14' else '1 day',font=('Segoe UI Semibold',11),fg='#41564b',bg='#f0f4f1',padx=8,pady=2).pack(side='left')
+            tk.Label(period,text='14 days' if days=='14' else '1 day',font=('Segoe UI Semibold',11),fg=self.color('#41564b'),bg=self.color('#f0f4f1'),padx=8,pady=2).pack(side='left')
             grid=tk.Frame(self.body,bg=self.bg); grid.pack(fill='x',pady=(0,6))
             for i,v in enumerate(['Model','Normal','Fast','Ratio']):
                 self.label(grid,v,9,'#989b9e',anchor='w' if i==0 else 'e').grid(row=0,column=i,sticky='ew',pady=(0,2))
@@ -571,7 +670,7 @@ class App:
         self.status_detail=self.data.get('details','')
     def build_sources(self,parent):
         footer=tk.Frame(parent,bg=self.bg); footer.pack(fill='x',pady=(14,18))
-        tk.Frame(footer,bg='#e9eaec',height=1).pack(fill='x',pady=(0,12))
+        tk.Frame(footer,bg=self.color('#e9eaec'),height=1).pack(fill='x',pady=(0,12))
         self.label(footer,'Sources & components',10,anchor='w').pack(fill='x')
         self.label(footer,'Checks latest tools on refresh; falls back when unavailable.',9,anchor='w',wraplength=SETTINGS_WRAP,justify='left').pack(fill='x',pady=(4,8))
         components=tk.Frame(footer,bg=self.bg);components.pack(fill='x')
@@ -588,7 +687,7 @@ class App:
             link=self.label(components,title,9,'#73777b',anchor='w',cursor='hand2',wraplength=215,justify='left')
             link.grid(row=index//2,column=index%2,sticky='nw',padx=(0,12),pady=3)
             link.bind('<Button-1>',lambda event,address=url:webbrowser.open(address))
-        tk.Frame(footer,bg='#e9eaec',height=1).pack(fill='x',pady=(14,12))
+        tk.Frame(footer,bg=self.color('#e9eaec'),height=1).pack(fill='x',pady=(14,12))
         self.label(footer,'Codex Meter · v'+VERSION,10,anchor='w').pack(fill='x')
         project=self.label(footer,REPOSITORY,9,'#185c40',anchor='w',cursor='hand2',wraplength=SETTINGS_WRAP,justify='left')
         project.pack(fill='x',pady=(5,7));project.bind('<Button-1>',lambda event:webbrowser.open(REPOSITORY))
@@ -602,9 +701,11 @@ class App:
         box=tk.Frame(win,bg=self.bg); box.pack(padx=30,pady=26)
         self.label(box,'Refresh interval',11,anchor='w').grid(row=0,column=0,sticky='w',pady=6)
         v=tk.StringVar(value='Manual' if not self.settings['interval'] else f"{self.settings['interval']} hours")
-        ttk.Combobox(box,textvariable=v,values=['Manual','2 hours','4 hours','6 hours','8 hours','12 hours'],state='readonly',width=18,font=('Segoe UI',10)).grid(row=0,column=1,padx=(20,0))
+        interval=ttk.Combobox(box,textvariable=v,values=['Manual','2 hours','4 hours','6 hours','8 hours','12 hours'],state='readonly',width=18,font=('Segoe UI',10),style='Meter.TCombobox')
+        interval.configure(postcommand=lambda:self.style_dropdown(interval))
+        interval.grid(row=0,column=1,padx=(20,0))
         self.label(box,'Reserve adjustment (tokens)',11,anchor='w').grid(row=1,column=0,sticky='w',pady=6)
-        r=tk.StringVar(value=str(self.settings['reserve'])); ttk.Entry(box,textvariable=r,width=21,font=('Segoe UI',10)).grid(row=1,column=1,padx=(20,0))
+        r=tk.StringVar(value=str(self.settings['reserve'])); ttk.Entry(box,textvariable=r,width=21,font=('Segoe UI',10),style='Meter.TEntry').grid(row=1,column=1,padx=(20,0))
         reserve_help = (
             'Fills gaps in locally recorded gpt-reserve tokens. Some reserve '
             'usage is already counted.\n\n'
@@ -631,6 +732,7 @@ class App:
         win.geometry(f'+{max(0,min(self.root.winfo_rootx()+20,win.winfo_screenwidth()-win.winfo_reqwidth()))}+'
                      f'{max(0,min(self.root.winfo_rooty()+50,win.winfo_screenheight()-win.winfo_reqheight()-90))}')
         win.deiconify();win.grab_set()
+        self.theme_caption(win)
     def schedule(self):
         if self.job: self.root.after_cancel(self.job); self.job=None
         if self.settings['interval']: self.job=self.root.after(self.settings['interval']*3600000,self.scheduled)
@@ -715,7 +817,8 @@ class App:
         if self.root.state()=='withdrawn': self.dirty=True
         else: self.draw()
     def setup_tray(self):
-        im=load_icon(32)
+        self.tray_dark=system_dark('SystemUsesLightTheme')
+        im=themed_icon(32,self.tray_dark)
         self.tray=pystray.Icon('Codex Meter',im,'Codex Meter',pystray.Menu(pystray.MenuItem('Open',lambda:self.root.after(0,self.show),default=True),pystray.MenuItem('Refresh',lambda:self.root.after(0,self.refresh)),pystray.MenuItem('Quit',lambda:self.root.after(0,self.quit))))
         self.tray.run_detached()
     def hide(self):
@@ -728,14 +831,23 @@ class App:
         if getattr(self,'settings_window',None) is not None and self.settings_window.winfo_exists(): self.settings_window.destroy()
         self.root.attributes('-alpha',0);self.root.withdraw()
     def show(self):
+        self.sync_theme(system_dark())
         if self.dirty: self.draw(); self.dirty=False
         if self.root.state() in ('withdrawn','iconic'): self.root.deiconify()
         self.root.lift(); self.root.focus_force()
     def quit(self):
         self.closed=True
+        if hasattr(self,'theme_watcher'): self.theme_watcher.stop()
         cancel_scans()
         self.tray.stop(); self.root.destroy()
-    def run(self): self.root.mainloop()
+    def run(self):
+        def changed(dark):
+            if not self.closed:
+                try: self.root.after(0,lambda:self.sync_theme(dark))
+                except (RuntimeError,tk.TclError): pass
+        self.theme_watcher=ThemeWatcher(changed);self.theme_watcher.start()
+        try: self.root.mainloop()
+        finally: self.closed=True;self.theme_watcher.stop()
 
 def worker_main():
     import runpy
