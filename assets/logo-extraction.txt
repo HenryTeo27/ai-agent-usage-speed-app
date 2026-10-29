@@ -1,0 +1,6 @@
+Tool: built-in image_gen, edit mode, transparent_background=true.
+Input: user-supplied blue-purple Codex logo on a white background.
+Selected output: assets/codex-gradient.png; runtime sizes: assets/codex-gradient.ico.
+
+Prompt:
+Use case: background-extraction. Edit target: attached existing Codex flower terminal logo. Extract this EXACT logo with genuine alpha transparency. Preserve the exact six-lobed flower silhouette, proportions, flat smooth lavender-to-periwinkle-to-blue vertical gradient, and exact position/shape of the > and underscore terminal symbols. Remove the white background OUTSIDE the flower. Also turn the white > and underscore symbols INSIDE the flower into transparent cutouts, matching the user's intended transparent logo. Do not redesign, add strokes, borders, halos, shadows, frames, checkerboard pattern or other objects. Clean antialiased edges. Output one centered high-resolution square transparent PNG, retaining balanced small transparent margins. All nontransparent pixels belong only to the original blue-purple gradient flower.

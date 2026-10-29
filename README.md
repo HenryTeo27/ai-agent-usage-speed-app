@@ -8,9 +8,9 @@ A small Windows desktop meter for Codex usage and speed. Close it to the notific
 
 The current interface uses slightly larger text and wider outer padding. The window starts at 500 pixels wide and fits the current 1-day speed table with a little bottom space. Scroll down to see 14 days. Refresh does not resize the window. Side margins remain 28 pixels; muted gray window controls stay flush with the top-right edge. Period badges have pill corners and the window uses a larger corner radius.
 
-The app follows Windows' **default app mode** automatically, including Custom mode. Dark mode uses charcoal surfaces, lighter text and readable green, amber and red values. Settings, inputs, menus and window icons follow the theme too. The tray icon follows the taskbar's system mode separately. Switching themes preserves the latest data and unsaved Settings input, without restarting or scanning logs.
+The app follows Windows' **default app mode** automatically, including Custom mode. Dark mode uses charcoal surfaces, lighter text and readable green, amber and red values. Settings, inputs and menus follow the theme too. Switching themes preserves the latest data and unsaved Settings input, without restarting or scanning logs.
 
-Windows can display a pinned shortcut's fixed icon instead of the live window icon. The installer updates this app's desktop, Start menu and matching pinned shortcuts to a clean purple line icon with a transparent background. It preserves the original logo shape with no backdrop or extra halo. Live window and tray icons still adapt to the system theme.
+The desktop shortcut, taskbar, tray, window and page header all use the same blue-purple gradient logo. The logo does not change with the theme. Its background and terminal cutouts use real alpha transparency, with no white box or checkerboard. The installer updates matching pinned shortcuts too. The selected PNG and multi-size ICO are in `assets/`.
 
 Windows [registry change notifications](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regnotifychangekeyvalue) wake a waiting listener when theme preferences change. There is no periodic theme polling. If the preference or notification key cannot be read, startup falls back to light mode; opening from the tray checks the preference again. The app never changes your Windows theme settings.
 

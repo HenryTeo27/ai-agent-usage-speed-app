@@ -36,7 +36,7 @@ class ThemeTests(unittest.TestCase):
                         self.assertFalse(gdi.PtInRegion(region,1,1))
                         self.assertTrue(gdi.PtInRegion(region,40,40))
                     finally: gdi.DeleteObject(region)
-                with meter.Image.open(meter.ROOT/'assets/codex-clean.ico') as source:
+                with meter.Image.open(meter.ROOT/'assets/codex-gradient.ico') as source:
                     icon=source.ico.getimage((32,32)).convert('RGBA')
                 self.assertEqual(icon.getpixel((0,0))[3],0)
             finally:
@@ -94,7 +94,7 @@ class ThemeTests(unittest.TestCase):
 
     def test_semantic_colors_and_icon_keep_contrast_and_transparency(self):
         meter.load_gui()
-        with meter.Image.open(meter.ROOT/'assets/codex-clean.ico') as source:
+        with meter.Image.open(meter.ROOT/'assets/codex-gradient.ico') as source:
             clean=source.ico.getimage((256,256)).convert('RGBA')
         self.assertEqual(clean.getchannel('A').tobytes(),meter.load_icon(256).getchannel('A').tobytes())
         self.assertEqual(len(set(meter.DARK_COLORS.values())),len(meter.DARK_COLORS))
@@ -102,7 +102,9 @@ class ThemeTests(unittest.TestCase):
             self.assertNotEqual(meter.theme_color(color,True),color)
             self.assertEqual(meter.theme_color(color,False),color)
         light=meter.themed_icon(32,False);dark=meter.themed_icon(32,True)
-        self.assertEqual(light.getchannel('A').tobytes(),dark.getchannel('A').tobytes())
+        self.assertEqual(light.tobytes(),dark.tobytes())
+        self.assertEqual(light.getpixel((0,0))[3],0)
+        self.assertLess(light.getpixel((19,19))[3],20)
 
     @unittest.skipUnless(os.name=='nt','Windows event-to-Tk delivery')
     def test_event_reaches_running_ui_without_showing_it(self):

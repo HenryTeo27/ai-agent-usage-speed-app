@@ -21,7 +21,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.14'
+VERSION = '1.0.15'
 REPOSITORY = 'https://github.com/HenryTeo27/ai-agent-usage-speed-app'
 CONTENT_PAD = 28
 SETTINGS_WRAP = 450
@@ -63,16 +63,13 @@ def load_gui():
 
 def load_icon(size):
     # Decode only the small ICO frame, not the full-resolution PNG.
-    with Image.open(ROOT/'assets/codex-transparent.ico') as icon:
+    with Image.open(ROOT/'assets/codex-gradient.ico') as icon:
         return icon.ico.getimage((size,size)).convert('RGBA')
 
 
 def themed_icon(size,dark):
-    icon=load_icon(size)
-    if dark:
-        foreground=Image.new('RGBA',icon.size,'#e5e8eb')
-        foreground.putalpha(icon.getchannel('A'));return foreground
-    return icon
+    # One user-selected gradient logo in every theme and Windows surface.
+    return load_icon(size)
 
 
 def terminate_process(process):
@@ -348,7 +345,7 @@ class App:
         self.root=tk.Tk(); self.root.withdraw(); self.root.attributes('-alpha',0)
         self.root.title('Codex Meter'); self.root.geometry('500x520'); self.root.minsize(460,360); self.root.configure(bg=self.color('#ffffff'))
         self.configure_ttk()
-        self.root.iconbitmap(str(ROOT/'assets/codex-transparent.ico'))
+        self.root.iconbitmap(str(ROOT/'assets/codex-gradient.ico'))
         self.root.protocol('WM_DELETE_WINDOW',self.hide)
         self.root.bind('<Map>',self.on_map)
         self.root.bind('<Configure>',self.update_window_shape)
@@ -478,24 +475,19 @@ class App:
         hwnd = user.GetParent((widget or self.root).winfo_id())
         user.GetDpiForWindow.argtypes = [wintypes.HWND]
         dpi = user.GetDpiForWindow(hwnd) or 96
-        icon_dark=self.dark if widget is not None and widget is not self.root else system_dark('SystemUsesLightTheme')
-        key=(dpi,icon_dark)
+        key=dpi
         cache=getattr(self,'native_icon_cache',{})
         icons=cache.get(key)
         if icons is None:
             icons=[]
-            with tempfile.TemporaryDirectory(prefix='codex-meter-icon-') as folder:
-                path=ROOT/'assets/codex-transparent.ico'
-                if icon_dark:
-                    path=Path(folder)/'dark.ico'
-                    themed_icon(256,True).save(path,format='ICO',sizes=[(n,n) for n in (16,20,24,32,40,48,64,256)])
-                for kind,metric in ((0,49),(1,11)):
-                    size=user.GetSystemMetricsForDpi(metric,dpi)
-                    icons.append(user.LoadImageW(None,str(path),1,size,size,0x10))
+            path=ROOT/'assets/codex-gradient.ico'
+            for kind,metric in ((0,49),(1,11)):
+                size=user.GetSystemMetricsForDpi(metric,dpi)
+                icons.append(user.LoadImageW(None,str(path),1,size,size,0x10))
         for kind,icon in enumerate(icons):
             if icon: user.SendMessageW(hwnd,0x80,kind,icon)
         # Multiple windows may still reference these handles. Reuse each DPI/theme
-        # pair until process exit rather than destroying another window's icon.
+        # size until process exit rather than destroying another window's icon.
         cache[key]=icons;self.native_icon_cache=cache
         self.native_icons=icons;self.native_icon_dpi=key
 
@@ -544,11 +536,6 @@ class App:
 
     def sync_theme(self,dark):
         if self.closed: return
-        if hasattr(self,'tray'):
-            tray_dark=system_dark('SystemUsesLightTheme')
-            if getattr(self,'tray_dark',None)!=tray_dark:
-                self.tray.icon=themed_icon(32,tray_dark);self.tray_dark=tray_dark
-                self.set_native_icons()
         if self.dark==dark: return
         old=self.dark;self.dark=dark;self.bg=self.color('#ffffff')
         changes={theme_color(value,old):theme_color(value,dark) for value in DARK_COLORS}
@@ -565,7 +552,7 @@ class App:
                 widget.itemconfigure('badge_bg',fill=self.color('#f0f4f1'))
                 widget.itemconfigure('badge_text',fill=self.color('#41564b'))
             for child in widget.winfo_children(): recolor(child)
-        recolor(self.root);self.configure_ttk();self.update_logo();self.set_native_icons();self.theme_caption(self.root)
+        recolor(self.root);self.configure_ttk();self.theme_caption(self.root)
         window=getattr(self,'settings_window',None)
         if window is not None and window.winfo_exists(): self.theme_caption(window)
 
@@ -848,8 +835,7 @@ class App:
         if self.root.state()=='withdrawn': self.dirty=True
         else: self.draw()
     def setup_tray(self):
-        self.tray_dark=system_dark('SystemUsesLightTheme')
-        im=themed_icon(32,self.tray_dark)
+        im=load_icon(32)
         self.tray=pystray.Icon('Codex Meter',im,'Codex Meter',pystray.Menu(pystray.MenuItem('Open',lambda:self.root.after(0,self.show),default=True),pystray.MenuItem('Refresh',lambda:self.root.after(0,self.refresh)),pystray.MenuItem('Quit',lambda:self.root.after(0,self.quit))))
         self.tray.run_detached()
     def hide(self):
