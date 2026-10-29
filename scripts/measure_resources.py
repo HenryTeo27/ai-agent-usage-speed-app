@@ -28,7 +28,10 @@ if args.pid:
                          private_mib=round(memory.private/2**20, 2),
                          threads=process.num_threads(), handles=process.num_handles())))
 else:
-    with tempfile.TemporaryDirectory(prefix='codex-meter-profile-') as folder:
+    temp_parent=Path(tempfile.gettempdir()).resolve()
+    with tempfile.TemporaryDirectory(prefix='codex-meter-profile-',dir=str(temp_parent)) as folder:
+        if Path(folder).resolve().parent != temp_parent:
+            raise RuntimeError('Unexpected diagnostic temporary directory')
         output = Path(folder) / 'result.json'
         child = subprocess.Popen([args.exe, '--diagnose', '--worker-output', str(output)],
                                  creationflags=0x08000000)

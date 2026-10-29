@@ -5,7 +5,7 @@ import importlib.util
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import timedelta, timezone
 from types import SimpleNamespace
-import sys, os, json, subprocess, threading, tempfile, re, time, shutil
+import sys, os, json, subprocess, threading, tempfile, re, time, shutil, math
 from pathlib import Path
 from datetime import datetime
 from system_theme import system_dark, ThemeWatcher
@@ -39,11 +39,12 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.16'
+VERSION = '1.0.17'
 REPOSITORY = 'https://github.com/HenryTeo27/ai-agent-usage-speed-app'
 CONTENT_PAD = 28
 SETTINGS_WRAP = 450
 DEFAULT = {'interval': 6, 'reserve': 600000000, 'appearance':'system'}
+DEADLINE_CHECK_MS = 60000
 CACHED_SPEED = DATA / 'tools' / 'codex_speed.py'
 
 ACTIVE_PROCESSES = set()
@@ -154,6 +155,23 @@ def load_settings():
     if type(saved.get('reserve')) is int and saved['reserve']>=0: settings['reserve']=saved['reserve']
     if saved.get('appearance') in ('system','light','dark'): settings['appearance']=saved['appearance']
     return settings
+
+
+def last_refresh_time(data, snapshot=None):
+    """Find the latest completed attempt or partial result in an older snapshot."""
+    attempt=data.get('last_refresh_attempt_at')
+    if type(attempt) in (int,float) and math.isfinite(attempt) and attempt>0:
+        return float(attempt)
+    candidates=[data.get('last_refresh_at')]
+    updates=data.get('updated_at')
+    if isinstance(updates,dict): candidates.extend(updates.values())
+    times=[float(value) for value in candidates if type(value) in (int,float) and math.isfinite(value) and value>0]
+    if times: return max(times)
+    # Older snapshots may have no timestamps. Never use mtime for an empty state.
+    if any(key in data for key in ('usage','limits','speed')):
+        try: return (snapshot or SNAPSHOT).stat().st_mtime
+        except OSError: pass
+    return None
 
 
 def apply_usage_result(data,value,previous,observed_at):
@@ -397,14 +415,12 @@ class App:
         self.root.protocol('WM_DELETE_WINDOW',self.hide)
         self.root.bind('<Map>',self.on_map)
         self.root.bind('<Configure>',self.update_window_shape)
+        self.root.bind('<FocusIn>',self.on_focus)
         self.build(); self.draw()
         self.root.update_idletasks();self.configure_window();self.compact_height();self.root.update_idletasks()
         self.setup_tray();self.schedule()
         self.publish_ready()
         if '--start-hidden' not in sys.argv: self.show()
-        # A recent snapshot can be shown immediately without another full scan.
-        age = time.time() - self.data.get('last_refresh_at', SNAPSHOT.stat().st_mtime if SNAPSHOT.exists() else 0)
-        if not self.data or (self.settings['interval'] and age >= self.settings['interval']*3600): self.root.after_idle(self.refresh)
     def configure_window(self):
         """Use native styles, without installing Python callbacks in the window procedure."""
         if os.name!='nt': return
@@ -636,7 +652,7 @@ class App:
         self.body.bind('<Configure>',adjust)
         self.root.bind_all('<MouseWheel>',lambda e:self.canvas.yview_scroll(int(-e.delta/120),'units'))
         self.status=tk.Label(self.root,text='',font=('Segoe UI',9),fg=self.color('#8a8c8f'),bg=bg,anchor='w'); self.status.pack(fill='x',padx=CONTENT_PAD,pady=(8,18))
-        self.status_tooltip=Tooltip(self.status,lambda:self.status_detail if self.status_detail else 'Latest refresh result')
+        self.status_tooltip=Tooltip(self.status,self.status_tooltip_text)
         self.status_detail=self.data.get('details','')
     def window_button(self,parent,kind,command,tip):
         scale=max(1,float(self.root.tk.call('tk','scaling'))/(96/72))
@@ -823,10 +839,39 @@ class App:
         win.deiconify();win.grab_set();self.theme_caption(win)
     def schedule(self):
         if self.job: self.root.after_cancel(self.job); self.job=None
-        if self.settings['interval']: self.job=self.root.after(self.settings['interval']*3600000,self.scheduled)
-    def scheduled(self): self.job=None; self.refresh()
+        interval=self.settings['interval']
+        if not interval or self.busy or self.closed: return
+        deadline=self.refresh_deadline()
+        remaining=0 if deadline is None else max(0,deadline-time.time())
+        delay=min(DEADLINE_CHECK_MS,max(0,math.ceil(remaining*1000)))
+        self.job=self.root.after(delay,self.scheduled)
+    def refresh_deadline(self):
+        previous=last_refresh_time(self.data)
+        if previous is None: return None
+        now=time.time()
+        # If the wall clock moves backward, anchor the future timestamp once.
+        if previous>now and getattr(self,'_rebased_previous',None)!=previous:
+            self._rebased_previous=previous;self._rebased_time=now
+        if getattr(self,'_rebased_previous',None)==previous:
+            previous=self._rebased_time
+        return previous+self.settings['interval']*3600
+    def status_tooltip_text(self):
+        text=self.status_detail or 'Latest refresh result'
+        if not self.settings['interval']: return text+'\nAutomatic refresh: off'
+        if self.busy: return text+'\nRefresh in progress'
+        deadline=self.refresh_deadline()
+        if deadline is None or deadline<=time.time(): return text+'\nAutomatic refresh: due now'
+        return text+'\nNext automatic refresh: '+datetime.fromtimestamp(deadline).strftime('%b %d, %H:%M')
+    def scheduled(self):
+        self.job=None
+        if self.closed or self.busy or not self.settings['interval']: return
+        deadline=self.refresh_deadline()
+        if deadline is None or time.time()>=deadline:
+            self.refresh()
+        else: self.schedule()
     def refresh(self):
         if self.busy: return
+        if self.job: self.root.after_cancel(self.job);self.job=None
         self.usage_baseline=dict(self.data['usage']) if 'usage' in self.data else None
         self.busy=True; self.refresh_started=time.monotonic(); self.pending={'usage','limits','speed'}
         self.refresh_errors=[]; self.refresh_notes=[]; self.refresh_timings={}
@@ -875,7 +920,9 @@ class App:
         self.data['details']='\n'.join(details)
         self.data['refresh_seconds']=self.refresh_timings
         self.data['app_version']=VERSION
-        if not self.refresh_errors: self.data['last_refresh_at']=time.time()
+        finished_at=time.time()
+        self.data['last_refresh_attempt_at']=finished_at
+        if not self.refresh_errors: self.data['last_refresh_at']=finished_at
         try: save(SNAPSHOT,self.data)
         except Exception as exc: self.data['status']='Could not save latest result'; self.data['details']=str(exc)
         finally:
@@ -897,6 +944,9 @@ class App:
             if self.dirty: self.draw();self.dirty=False
             self.publish_ready()
             if self._show_job is None: self._show_job=self.root.after_idle(self.reveal)
+    def on_focus(self,event):
+        if event.widget is self.root and not self.busy and self.settings['interval']:
+            self.schedule()
     def reveal(self):
         self._show_job=None
         if not self.closed and self.root.state() in ('normal','zoomed'):
@@ -921,6 +971,7 @@ class App:
         self.root.attributes('-alpha',0);self.root.withdraw()
     def show(self):
         self.sync_theme(system_dark())
+        if not self.busy and self.settings['interval']: self.schedule()
         if self.dirty: self.draw(); self.dirty=False
         if self.root.state() in ('withdrawn','iconic'): self.root.deiconify()
         self.root.lift(); self.root.focus_force()

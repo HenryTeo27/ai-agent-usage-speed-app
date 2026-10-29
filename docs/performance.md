@@ -24,7 +24,7 @@ The external tools still read and parse local logs. This computer had roughly 5.
 - Decode a small ICO frame for the tray and header instead of retaining the full-resolution PNG.
 - Run speed download and parsing in one isolated worker. Its parsing memory is released when it exits.
 - Skip window-body redraws while hidden. Redraw the latest values once when restored.
-- Check refresh results every 0.5 seconds while visible and every 1 second while hidden. Stop checking when the refresh finishes. No recurring refresh polling runs between scans.
+- Check refresh results every 0.5 seconds while visible and every 1 second while hidden. Stop checking results when the refresh finishes. In automatic mode, a lightweight deadline timer runs at most once per minute between scans; it starts no worker until due. Manual mode has no deadline timer.
 - Terminate owned command trees when the user quits, including npm/native-tool children. A regression test verifies this behavior.
 - Preserve single-pass speed parsing, upstream statistics, latest-tool checks and immediate per-source updates.
 
