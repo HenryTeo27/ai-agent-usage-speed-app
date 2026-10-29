@@ -8,6 +8,40 @@ import system_theme
 
 
 class ThemeTests(unittest.TestCase):
+    def test_compact_height_larger_corners_and_muted_controls(self):
+        meter.load_gui()
+        with patch.object(meter.App,'show'),patch.object(meter.App,'setup_tray'),patch.object(meter.App,'refresh'),patch.object(meter.App,'schedule'),patch.object(meter.App,'publish_ready'):
+            app=meter.App()
+            try:
+                app.root.update_idletasks()
+                end=app.day1_grid.winfo_y()+app.day1_grid.winfo_reqheight()
+                extra=app.compact_requested_height-app.root.winfo_height()
+                self.assertEqual(app.canvas.winfo_height()+extra,end+8)
+                self.assertLess(app.compact_requested_height,690)
+                size=app.root.geometry().split('+')[0]
+                app.draw();app.root.update_idletasks()
+                self.assertEqual(app.root.geometry().split('+')[0],size)
+                self.assertEqual(app.root.state(),'withdrawn')
+                if os.name=='nt':
+                    import ctypes
+                    from ctypes import wintypes
+                    gdi=ctypes.windll.gdi32;user=ctypes.windll.user32
+                    gdi.CreateRectRgn.argtypes=[ctypes.c_int]*4;gdi.CreateRectRgn.restype=wintypes.HRGN
+                    user.GetWindowRgn.argtypes=[wintypes.HWND,wintypes.HRGN]
+                    gdi.PtInRegion.argtypes=[wintypes.HRGN,ctypes.c_int,ctypes.c_int]
+                    gdi.DeleteObject.argtypes=[wintypes.HANDLE]
+                    region=gdi.CreateRectRgn(0,0,1,1)
+                    try:
+                        self.assertTrue(user.GetWindowRgn(app.window_handle,region))
+                        self.assertFalse(gdi.PtInRegion(region,1,1))
+                        self.assertTrue(gdi.PtInRegion(region,40,40))
+                    finally: gdi.DeleteObject(region)
+                with meter.Image.open(meter.ROOT/'assets/codex-taskbar.ico') as source:
+                    icon=source.ico.getimage((32,32)).convert('RGBA')
+                self.assertEqual(icon.getpixel((0,0))[3],0)
+            finally:
+                app.closed=True;app.root.destroy()
+
     def test_rounded_period_badges_keep_labels_and_follow_both_themes(self):
         meter.load_gui()
         with patch.object(meter.App,'show'),patch.object(meter.App,'setup_tray'),patch.object(meter.App,'refresh'),patch.object(meter.App,'schedule'),patch.object(meter.App,'publish_ready'):

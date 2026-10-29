@@ -6,9 +6,11 @@ A small Windows desktop meter for Codex usage and speed. Close it to the notific
 
 *App screenshot with synthetic demo data. The latest layout removes the title bar, uses rounded corners, and places Refresh / Settings beside the remaining allowance. Source credits are in Settings.*
 
-The current interface uses slightly larger text and wider outer padding. The default window is 500 × 690 pixels, with 28-pixel side margins. Window controls stay flush with the top-right edge.
+The current interface uses slightly larger text and wider outer padding. The window starts at 500 pixels wide and fits the current 1-day speed table with a little bottom space. Scroll down to see 14 days. Refresh does not resize the window. Side margins remain 28 pixels; muted gray window controls stay flush with the top-right edge. Period badges have pill corners and the window uses a larger corner radius.
 
 The app follows Windows' **default app mode** automatically, including Custom mode. Dark mode uses charcoal surfaces, lighter text and readable green, amber and red values. Settings, inputs, menus and window icons follow the theme too. The tray icon follows the taskbar's system mode separately. Switching themes preserves the latest data and unsaved Settings input, without restarting or scanning logs.
+
+Windows can display a pinned shortcut's fixed icon instead of the live window icon. The installer updates this app's desktop, Start menu and matching pinned shortcuts to a transparent dual-tone icon that remains visible on both light and dark backgrounds. Live window and tray icons still adapt to the system theme.
 
 Windows [registry change notifications](https://learn.microsoft.com/en-us/windows/win32/api/winreg/nf-winreg-regnotifychangekeyvalue) wake a waiting listener when theme preferences change. There is no periodic theme polling. If the preference or notification key cannot be read, startup falls back to light mode; opening from the tray checks the preference again. The app never changes your Windows theme settings.
 

@@ -8,7 +8,7 @@ if (Test-Path -LiteralPath $packaged) {
     Copy-Item -Path (Join-Path $sourceRoot 'CodexMeter\*') -Destination $targetRoot -Recurse -Force
     $launcher = Join-Path $targetRoot 'CodexMeter.exe'
     $arguments = ''
-    $icon = Join-Path $targetRoot '_internal\assets\codex-transparent.ico'
+    $icon = Join-Path $targetRoot '_internal\assets\codex-taskbar.ico'
 } else {
     foreach ($file in @('meter.py', 'system_theme.py', 'requirements.txt')) {
         Copy-Item -LiteralPath (Join-Path $sourceRoot $file) -Destination $targetRoot -Force
@@ -29,7 +29,7 @@ if (Test-Path -LiteralPath $packaged) {
     if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
     $launcher = Join-Path $runtime 'Scripts\pythonw.exe'
     $arguments = '"' + (Join-Path $targetRoot 'meter.py') + '"'
-    $icon = Join-Path $targetRoot 'assets\codex-transparent.ico'
+    $icon = Join-Path $targetRoot 'assets\codex-taskbar.ico'
 }
 foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
     $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $folder 'Codex Meter.lnk'))
@@ -39,6 +39,18 @@ foreach ($folder in @([Environment]::GetFolderPath('Desktop'), [Environment]::Ge
     $shortcut.IconLocation = $icon
     $shortcut.Description = 'Codex usage and speed'
     $shortcut.Save()
+}
+# Pinned shortcuts can keep their own fixed icon instead of the window's WM_SETICON.
+$pinnedFolder = Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'
+if (Test-Path -LiteralPath $pinnedFolder) {
+    $meterShell = New-Object -ComObject WScript.Shell
+    foreach ($meterLink in Get-ChildItem -LiteralPath $pinnedFolder -Filter '*.lnk') {
+        $meterPinned = $meterShell.CreateShortcut($meterLink.FullName)
+        if ($meterPinned.TargetPath -eq $launcher -and ($arguments -eq '' -or $meterPinned.Arguments -eq $arguments)) {
+            $meterPinned.IconLocation = $icon
+            $meterPinned.Save()
+        }
+    }
 }
 if (-not $NoLaunch) {
     if ($arguments) { Start-Process -FilePath $launcher -ArgumentList $arguments -WorkingDirectory $targetRoot }

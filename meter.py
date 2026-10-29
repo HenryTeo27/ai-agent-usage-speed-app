@@ -21,7 +21,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.12'
+VERSION = '1.0.13'
 REPOSITORY = 'https://github.com/HenryTeo27/ai-agent-usage-speed-app'
 CONTENT_PAD = 28
 SETTINGS_WRAP = 450
@@ -37,7 +37,7 @@ DARK_COLORS = {
     '#ffffff':'#191c20', '#222426':'#eef0f2', '#292d30':'#e5e8eb',
     '#353a3e':'#d9dfe4', '#777b80':'#aab2bb', '#73777b':'#adb5be',
     '#8a8c8f':'#929da8', '#989b9e':'#9ca7b2', '#72797d':'#b3bdc7',
-    '#42474b':'#cbd3db', '#e9ecee':'#333a42', '#f2f4f3':'#2c333b',
+    '#42474b':'#cbd3db', '#858b92':'#929aa3', '#e9ecee':'#333a42', '#f2f4f3':'#2c333b',
     '#e9eaec':'#343c45', '#41564b':'#b8d3c3', '#f0f4f1':'#27382f',
     '#185c40':'#82cda8', '#947019':'#dfbd73', '#9b3038':'#ec929a',
 }
@@ -346,14 +346,14 @@ class App:
         if self.data.get('status','').startswith('Updated '):
             self.data['status']=re.sub(r'\s*·\s*\d+(?:\.\d+)?s(?=\s*·|$)','',self.data['status'])
         self.root=tk.Tk(); self.root.withdraw(); self.root.attributes('-alpha',0)
-        self.root.title('Codex Meter'); self.root.geometry('500x690'); self.root.minsize(460,640); self.root.configure(bg=self.color('#ffffff'))
+        self.root.title('Codex Meter'); self.root.geometry('500x520'); self.root.minsize(460,360); self.root.configure(bg=self.color('#ffffff'))
         self.configure_ttk()
         self.root.iconbitmap(str(ROOT/'assets/codex-transparent.ico'))
         self.root.protocol('WM_DELETE_WINDOW',self.hide)
         self.root.bind('<Map>',self.on_map)
         self.root.bind('<Configure>',self.update_window_shape)
         self.build(); self.draw()
-        self.root.update_idletasks();self.configure_window()
+        self.root.update_idletasks();self.configure_window();self.compact_height();self.root.update_idletasks()
         self.setup_tray();self.schedule()
         self.publish_ready()
         if '--start-hidden' not in sys.argv: self.show()
@@ -392,7 +392,7 @@ class App:
         from ctypes import wintypes
         user=ctypes.windll.user32
         if not hasattr(self,'_native_rounding'):
-            corner=ctypes.c_int(2)  # DWMWCP_ROUND; retain compositor antialiasing/shadow.
+            corner=ctypes.c_int(1)  # Custom larger corners; DWM only offers fixed presets.
             dwm=ctypes.windll.dwmapi
             dwm.DwmSetWindowAttribute.argtypes=[wintypes.HWND,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD]
             self._native_rounding=dwm.DwmSetWindowAttribute(self.window_handle,33,ctypes.byref(corner),ctypes.sizeof(corner))==0
@@ -401,13 +401,16 @@ class App:
             margin=Margins(1,1,1,1)
             dwm.DwmExtendFrameIntoClientArea.argtypes=[wintypes.HWND,ctypes.POINTER(Margins)]
             dwm.DwmExtendFrameIntoClientArea(self.window_handle,ctypes.byref(margin))
-        if self._native_rounding: return
-        # Windows 10 fallback; update only when the window changes size.
+        # Reuse the region during moves; only a size/state/DPI change needs work.
+        dpi=user.GetDpiForWindow(self.window_handle) or 96
+        shape=(self.window_handle,self.root.winfo_width(),self.root.winfo_height(),self.root.state()=='zoomed',dpi)
+        if getattr(self,'_region_shape',None)==shape: return
+        self._region_shape=shape
         user.SetWindowRgn.argtypes=[wintypes.HWND,wintypes.HRGN,wintypes.BOOL]
         if self.root.state()=='zoomed': user.SetWindowRgn(self.window_handle,None,True);return
         gdi=ctypes.windll.gdi32
         gdi.CreateRoundRectRgn.argtypes=[ctypes.c_int]*6;gdi.CreateRoundRectRgn.restype=wintypes.HRGN
-        radius=round(16*(user.GetDpiForWindow(self.window_handle) or 96)/96)
+        radius=round(40*dpi/96)  # Ellipse diameter: a 20-DIP corner radius.
         region=gdi.CreateRoundRectRgn(0,0,self.root.winfo_width()+1,self.root.winfo_height()+1,radius,radius)
         if not user.SetWindowRgn(self.window_handle,region,True):
             gdi.DeleteObject.argtypes=[wintypes.HANDLE];gdi.DeleteObject(region)
@@ -557,7 +560,7 @@ class App:
                     if value in changes: widget.configure(**{option:changes[value]})
                 except tk.TclError: pass
             if isinstance(widget,tk.Canvas) and widget.find_withtag('icon'):
-                widget.configure(bg=self.bg);widget.itemconfigure('icon',fill=self.color('#42474b'))
+                widget.configure(bg=self.bg);widget.itemconfigure('icon',fill=self.color('#858b92'))
             if isinstance(widget,tk.Canvas) and widget.find_withtag('badge_bg'):
                 widget.itemconfigure('badge_bg',fill=self.color('#f0f4f1'))
                 widget.itemconfigure('badge_text',fill=self.color('#41564b'))
@@ -599,10 +602,10 @@ class App:
         width,height=round(38*scale),round(40*scale)
         button=tk.Canvas(parent,width=width,height=height,bg=self.bg,bd=0,highlightthickness=0,cursor='arrow',takefocus=True)
         glyph={'close':'\ue8bb','minimize':'\ue921','maximize':'\ue922'}[kind]
-        button.create_text(width/2,height/2,text=glyph,font=('Segoe MDL2 Assets',9),fill=self.color('#42474b'),anchor='center',tags='icon')
+        button.create_text(width/2,height/2,text=glyph,font=('Segoe MDL2 Assets',9),fill=self.color('#858b92'),anchor='center',tags='icon')
         def hover(active):
             button.config(bg=('#c42b1c' if kind=='close' else self.color('#e9ecee')) if active else self.bg)
-            button.itemconfigure('icon',fill='#ffffff' if active and kind=='close' else self.color('#42474b'))
+            button.itemconfigure('icon',fill='#ffffff' if active and kind=='close' else self.color('#858b92'))
         button.bind('<Enter>',lambda event:hover(True))
         button.bind('<Leave>',lambda event:hover(False))
         button.bind('<ButtonRelease-1>',lambda event:command() if 0<=event.x<width and 0<=event.y<height else None)
@@ -617,7 +620,7 @@ class App:
         from tkinter import font as tkfont
         font=tkfont.Font(root=self.root,font=('Segoe UI Semibold',11))
         width=font.measure(text)+20;height=font.metrics('linespace')+6
-        radius=min(height/2,round(6*float(self.root.tk.call('tk','scaling'))/(96/72)))
+        radius=height/2
         badge=tk.Canvas(parent,width=width,height=height,bg=self.bg,bd=0,highlightthickness=0)
         badge.badge_font=font
         badge.create_polygon(radius,0,width-radius,0,width,0,width,radius,
@@ -626,6 +629,16 @@ class App:
                              smooth=True,splinesteps=24,fill=self.color('#f0f4f1'),outline='',tags='badge_bg')
         badge.create_text(width/2,height/2,text=text,font=font,fill=self.color('#41564b'),tags='badge_text')
         return badge
+
+    def compact_height(self):
+        """Fit the first speed table once at startup; refresh never resizes the app."""
+        self.root.update_idletasks()
+        end=self.day1_grid.winfo_y()+self.day1_grid.winfo_reqheight()
+        height=self.root.winfo_height()+end+8-self.canvas.winfo_height()
+        height=max(360,min(height,self.root.winfo_screenheight()-80))
+        # Tk applies this request on mapping; the window stays hidden until then.
+        self.compact_requested_height=height
+        self.root.geometry(f'500x{height}')
     def draw(self):
         # Build off-screen while the current page stays intact, then swap once.
         previous=self.body
@@ -668,6 +681,7 @@ class App:
             period=tk.Frame(self.body,bg=self.bg);period.pack(fill='x',pady=(6,7))
             self.period_badge(period,'14 days' if days=='14' else '1 day').pack(side='left')
             grid=tk.Frame(self.body,bg=self.bg); grid.pack(fill='x',pady=(0,6))
+            if days=='1': self.day1_grid=grid
             for i,v in enumerate(['Model','Normal','Fast','Ratio']):
                 self.label(grid,v,9,'#989b9e',anchor='w' if i==0 else 'e').grid(row=0,column=i,sticky='ew',pady=(0,2))
                 grid.columnconfigure(i,weight=4 if i==0 else 1)
