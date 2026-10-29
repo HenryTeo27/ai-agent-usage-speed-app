@@ -8,6 +8,27 @@ import system_theme
 
 
 class ThemeTests(unittest.TestCase):
+    def test_rounded_period_badges_keep_labels_and_follow_both_themes(self):
+        meter.load_gui()
+        with patch.object(meter.App,'show'),patch.object(meter.App,'setup_tray'),patch.object(meter.App,'refresh'),patch.object(meter.App,'schedule'),patch.object(meter.App,'publish_ready'):
+            app=meter.App()
+            try:
+                def descendants(widget):
+                    for child in widget.winfo_children():
+                        yield child
+                        yield from descendants(child)
+                badges=[w for w in descendants(app.body) if isinstance(w,meter.tk.Canvas) and w.find_withtag('badge_bg')]
+                self.assertEqual([w.itemcget('badge_text','text') for w in badges],['1 day','14 days'])
+                for dark in (True,False):
+                    app.sync_theme(dark);app.root.update_idletasks()
+                    for badge in badges:
+                        self.assertEqual(badge.itemcget('badge_bg','fill'),app.color('#f0f4f1'))
+                        self.assertEqual(badge.itemcget('badge_text','fill'),app.color('#41564b'))
+                        self.assertEqual(badge.itemcget('badge_bg','smooth'),'true')
+                    self.assertEqual(app.root.state(),'withdrawn')
+            finally:
+                app.closed=True;app.root.destroy()
+
     def test_hidden_startup_and_live_roundtrip_preserve_input_and_data(self):
         meter.load_gui()
         for initial in (False,True):

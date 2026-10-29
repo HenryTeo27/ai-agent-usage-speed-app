@@ -21,7 +21,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.11'
+VERSION = '1.0.12'
 REPOSITORY = 'https://github.com/HenryTeo27/ai-agent-usage-speed-app'
 CONTENT_PAD = 28
 SETTINGS_WRAP = 450
@@ -558,6 +558,9 @@ class App:
                 except tk.TclError: pass
             if isinstance(widget,tk.Canvas) and widget.find_withtag('icon'):
                 widget.configure(bg=self.bg);widget.itemconfigure('icon',fill=self.color('#42474b'))
+            if isinstance(widget,tk.Canvas) and widget.find_withtag('badge_bg'):
+                widget.itemconfigure('badge_bg',fill=self.color('#f0f4f1'))
+                widget.itemconfigure('badge_text',fill=self.color('#41564b'))
             for child in widget.winfo_children(): recolor(child)
         recolor(self.root);self.configure_ttk();self.update_logo();self.set_native_icons();self.theme_caption(self.root)
         window=getattr(self,'settings_window',None)
@@ -609,6 +612,20 @@ class App:
 
     def label(self,parent,text,size=11,color='#777b80',font='Segoe UI',bold=False,**kw):
         return tk.Label(parent,text=text,bg=self.bg,fg=self.color(color),font=(font,size,'bold' if bold else 'normal'),**kw)
+
+    def period_badge(self,parent,text):
+        from tkinter import font as tkfont
+        font=tkfont.Font(root=self.root,font=('Segoe UI Semibold',11))
+        width=font.measure(text)+20;height=font.metrics('linespace')+6
+        radius=min(height/2,round(6*float(self.root.tk.call('tk','scaling'))/(96/72)))
+        badge=tk.Canvas(parent,width=width,height=height,bg=self.bg,bd=0,highlightthickness=0)
+        badge.badge_font=font
+        badge.create_polygon(radius,0,width-radius,0,width,0,width,radius,
+                             width,height-radius,width,height,width-radius,height,
+                             radius,height,0,height,0,height-radius,0,radius,0,0,
+                             smooth=True,splinesteps=24,fill=self.color('#f0f4f1'),outline='',tags='badge_bg')
+        badge.create_text(width/2,height/2,text=text,font=font,fill=self.color('#41564b'),tags='badge_text')
+        return badge
     def draw(self):
         # Build off-screen while the current page stays intact, then swap once.
         previous=self.body
@@ -649,7 +666,7 @@ class App:
         speed=self.data.get('speed',{})
         for days in ('1','14'):
             period=tk.Frame(self.body,bg=self.bg);period.pack(fill='x',pady=(6,7))
-            tk.Label(period,text='14 days' if days=='14' else '1 day',font=('Segoe UI Semibold',11),fg=self.color('#41564b'),bg=self.color('#f0f4f1'),padx=8,pady=2).pack(side='left')
+            self.period_badge(period,'14 days' if days=='14' else '1 day').pack(side='left')
             grid=tk.Frame(self.body,bg=self.bg); grid.pack(fill='x',pady=(0,6))
             for i,v in enumerate(['Model','Normal','Fast','Ratio']):
                 self.label(grid,v,9,'#989b9e',anchor='w' if i==0 else 'e').grid(row=0,column=i,sticky='ew',pady=(0,2))
