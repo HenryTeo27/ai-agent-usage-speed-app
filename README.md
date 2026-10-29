@@ -2,9 +2,12 @@
 
 A small Windows desktop meter for Codex usage and speed. Close it to the notification area and reopen it from the desktop shortcut.
 
-![Codex Meter desktop app with demo usage and speed data](docs/screenshot.png)
+<p>
+  <img src="docs/screenshot-dark.png" alt="Codex Meter in dark mode" width="48%">
+  <img src="docs/screenshot-light.png" alt="Codex Meter in light mode" width="48%">
+</p>
 
-*App screenshot with synthetic demo data. The layout removes the title bar, uses rounded corners, and places Refresh / Settings beside the remaining allowance.*
+*Codex Meter in dark and light mode.*
 
 The current interface uses slightly larger text and wider outer padding. The window starts at 500 pixels wide and fits the current 1-day speed table with a little bottom space. Scroll down to see 14 days. Refresh does not resize the window. Side margins remain 28 pixels; muted gray window controls stay flush with the top-right edge. Period badges have pill corners and the window uses a larger corner radius.
 
