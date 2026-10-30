@@ -41,7 +41,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.1.2'
+VERSION = '1.1.3'
 REPOSITORY = 'https://github.com/HenryTeo27/ai-agent-usage-speed-app'
 CONTENT_PAD = 28
 SETTINGS_WRAP = 450
@@ -67,10 +67,8 @@ DARK_COLORS = {
     '#42474b':'#cbd3db', '#858b92':'#929aa3', '#e9ecee':'#333a42', '#f2f4f3':'#2c333b',
     '#e9eaec':'#343c45', '#41564b':'#b8d3c3', '#f0f4f1':'#27382f',
     '#185c40':'#82cda8', '#947019':'#dfbd73', '#9b3038':'#ec929a',
-    '#7c3aed':'#b69aff', '#15803d':'#72d6a0', '#1d4ed8':'#8db5ff',
-    '#b45309':'#ffbf70', '#be185d':'#f6a0cb', '#0e7490':'#76d6e8',
+    '#f1f2f4':'#2b3037', '#6b7078':'#aeb7c2',
 }
-ACCOUNT_COLORS=('#7c3aed','#15803d','#1d4ed8','#b45309','#be185d','#0e7490')
 
 
 def theme_color(color, dark):
@@ -90,13 +88,16 @@ def load_gui():
     import pystray
     from PIL import Image, ImageTk
 
-    class AccountLabel(tk.Text):
-        """Read-only text with a separately colored account prefix on each line."""
+    class AccountLabel(tk.Frame):
+        """Aligned neutral identity tags beside normally styled values."""
         def __init__(self,parent,app,font,color):
-            self.app=app;self.text_value=''
-            super().__init__(parent,font=font,height=1,width=1,bd=0,highlightthickness=0,
-                             padx=2,pady=1,state='disabled',cursor='arrow',takefocus=False,
-                             wrap='none',bg=app.bg,fg=app.color(color))
+            from tkinter import font as tkfont
+            self.app=app;self.text_value='';self.rows=[];self.value_font=font;self.value_color=color
+            super().__init__(parent,bg=app.bg,bd=0)
+            self.tag_font=tkfont.Font(root=app.root,font=('Segoe UI Semibold',8))
+            self.tag_width=self.tag_font.measure('GPT2')+12
+            self.tag_height=self.tag_font.metrics('linespace')+2
+            self.configure(text='')
         def cget(self,key):
             return self.text_value if key=='text' else super().cget(key)
         def configure(self,cnf=None,**kw):
@@ -104,17 +105,47 @@ def load_gui():
             result=super().configure(cnf,**kw)
             if value is not None:
                 self.text_value=value
-                super().configure(state='normal',height=max(1,len(value.splitlines())))
-                self.delete('1.0','end');self.insert('1.0',value)
-                for line,text in enumerate(value.splitlines(),1):
+                lines=value.splitlines() or ['']
+                while len(self.rows)>len(lines): self.rows.pop()['frame'].destroy()
+                for index,text in enumerate(lines):
+                    if index==len(self.rows):
+                        row=tk.Frame(self,bg=self.app.bg);row.pack(fill='x')
+                        badge=tk.Canvas(row,width=self.tag_width,height=self.tag_height,
+                                        bg=self.app.bg,highlightthickness=0,bd=0)
+                        width,height=self.tag_width,self.tag_height
+                        badge.create_polygon(4,0,width-4,0,width,0,width,4,width,height-4,
+                                             width,height,width-4,height,4,height,0,height,
+                                             0,height-4,0,4,0,0,smooth=True,splinesteps=16,
+                                             fill=self.app.color('#f1f2f4'),outline='',tags='account_bg')
+                        badge.create_text(width/2,height/2,text='',font=self.tag_font,
+                                          fill=self.app.color('#6b7078'),tags='account_text')
+                        label=tk.Label(row,text='',bg=self.app.bg,fg=self.app.color(self.value_color),
+                                       font=self.value_font,anchor='w',padx=0,pady=1)
+                        label.pack(side='right',fill='x',expand=True)
+                        self.rows.append({'frame':row,'badge':badge,'value':label})
+                    item=self.rows[index]
                     match=re.match(r'^(GPT\d*|API\d*|Codex\d*) ',text)
                     if match:
-                        tag='account_'+match[1]
-                        self.tag_configure(tag,foreground=self.app.color(self.app.account_color(match[1])))
-                        self.tag_add(tag,f'{line}.0',f'{line}.{len(match[1])}')
-                super().configure(state='disabled')
+                        badge=item['badge']
+                        width=max(self.tag_width,self.tag_font.measure(match[1])+12);height=self.tag_height
+                        badge.configure(width=width)
+                        badge.coords('account_bg',4,0,width-4,0,width,0,width,4,width,height-4,
+                                     width,height,width-4,height,4,height,0,height,
+                                     0,height-4,0,4,0,0)
+                        badge.coords('account_text',width/2,height/2)
+                        badge.itemconfigure('account_text',text=match[1])
+                        if not badge.winfo_manager(): badge.pack(side='left',padx=(0,7),before=item['value'])
+                        item['value'].configure(text=text[match.end():])
+                    else:
+                        item['badge'].pack_forget();item['value'].configure(text=text)
             return result
         config=configure
+        def refresh_style(self):
+            for item in self.rows:
+                item['frame'].configure(bg=self.app.bg);item['badge'].configure(bg=self.app.bg)
+                item['badge'].itemconfigure('account_bg',fill=self.app.color('#f1f2f4'))
+                item['badge'].itemconfigure('account_text',fill=self.app.color('#6b7078'))
+                item['value'].configure(bg=self.app.bg,fg=self.app.color(self.value_color))
 
 
 def load_icon(size):
@@ -780,16 +811,6 @@ class App:
 
     def color(self,value): return theme_color(value,self.dark)
 
-    def account_color(self,short):
-        names=getattr(self,'account_order',None)
-        if names is None:
-            names=list(account_names(codex_homes()).values());self.account_order=names
-        for key in ('usage','speed'):
-            for item in self.data.get(key,{}).get('sources',[]):
-                if item.get('short') and item['short'] not in names: names.append(item['short'])
-        index=names.index(short) if short in names else 0
-        return ACCOUNT_COLORS[index%len(ACCOUNT_COLORS)]
-
     def update_logo(self):
         self.logo=ImageTk.PhotoImage(themed_icon(32,self.dark).resize((28,28),Image.Resampling.LANCZOS),master=self.root)
         self.logo_widget.configure(image=self.logo)
@@ -852,9 +873,7 @@ class App:
                 widget.itemconfigure('badge_bg',fill=self.color('#f0f4f1'))
                 widget.itemconfigure('badge_text',fill=self.color('#41564b'))
             if isinstance(widget,AccountLabel):
-                for tag in widget.tag_names():
-                    if tag.startswith('account_'):
-                        widget.tag_configure(tag,foreground=self.color(self.account_color(tag[8:])))
+                widget.refresh_style()
             for child in widget.winfo_children(): recolor(child)
         recolor(self.root);self.configure_ttk();self.theme_caption(self.root)
         window=getattr(self,'settings_window',None)
