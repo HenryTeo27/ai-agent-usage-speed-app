@@ -12,6 +12,7 @@ class ThemeTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         folder=tempfile.TemporaryDirectory();self.addCleanup(folder.cleanup)
+        patcher=patch.object(meter,'DATA',Path(folder.name));patcher.start();self.addCleanup(patcher.stop)
         for name in ('CONFIG','SNAPSHOT'):
             patcher=patch.object(meter,name,Path(folder.name)/(name.lower()+'.json'))
             patcher.start();self.addCleanup(patcher.stop)

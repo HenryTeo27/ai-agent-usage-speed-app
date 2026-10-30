@@ -16,4 +16,8 @@ $result = Join-Path $folder 'result.json'
 Start-Process -FilePath $Executable -ArgumentList @('--speed-worker',('"'+$script+'"'),'--worker-output',('"'+$result+'"')) -WindowStyle Hidden -Wait
 $data = Get-Content -LiteralPath $result -Raw | ConvertFrom-Json
 if (-not $data.ok -or $data.value -notmatch 'runtime-ready') { throw ('Packaged runtime failed: ' + $data.error) }
+$health = Join-Path $folder 'health.json'
+$healthProcess = Start-Process -FilePath $Executable -ArgumentList @('--health-check','--worker-output',('"'+$health+'"')) -WindowStyle Hidden -PassThru -Wait
+$data = Get-Content -LiteralPath $health -Raw | ConvertFrom-Json
+if (-not $data.ok -or -not $data.value.version -or $data.value.pid -ne $healthProcess.Id) { throw ('Packaged update health check failed: ' + $data.error) }
 Write-Host 'Packaged speed runtime passed.'

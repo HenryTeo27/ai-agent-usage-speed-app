@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import sys, os, json, subprocess, threading, tempfile, re, time, shutil, math
 from pathlib import Path
 from datetime import datetime
+import app_updater
 from system_theme import system_dark, ThemeWatcher
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 sys.path.insert(0, str(ROOT / 'vendor'))
@@ -39,12 +40,17 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.17'
+VERSION = '1.0.18'
 REPOSITORY = 'https://github.com/HenryTeo27/ai-agent-usage-speed-app'
 CONTENT_PAD = 28
 SETTINGS_WRAP = 450
-DEFAULT = {'interval': 6, 'reserve': 600000000, 'appearance':'system'}
+INTERVALS = {'Manual':0, '30 minutes':0.5, '1 hour':1, '2 hours':2,
+             '4 hours':4, '6 hours':6, '8 hours':8, '12 hours':12}
+DEFAULT = {'interval': 2, 'reserve': 600000000, 'appearance':'system'}
 DEADLINE_CHECK_MS = 60000
+APP_UPDATE_INTERVAL = 24*3600
+APP_UPDATE_RETRY = 6*3600
+APP_UPDATE_DEADLINE_CHECK = 3600
 CACHED_SPEED = DATA / 'tools' / 'codex_speed.py'
 
 ACTIVE_PROCESSES = set()
@@ -151,7 +157,8 @@ def load_settings():
     saved=read(CONFIG,{})
     if not isinstance(saved,dict): saved={}
     settings=dict(DEFAULT)
-    if saved.get('interval') in (0,2,4,6,8,12): settings['interval']=saved['interval']
+    if type(saved.get('interval')) in (int,float) and saved['interval'] in INTERVALS.values():
+        settings['interval']=saved['interval']
     if type(saved.get('reserve')) is int and saved['reserve']>=0: settings['reserve']=saved['reserve']
     if saved.get('appearance') in ('system','light','dark'): settings['appearance']=saved['appearance']
     return settings
@@ -275,6 +282,28 @@ def get_speed():
     with tempfile.TemporaryDirectory(prefix='codex-meter-speed-') as tmp:
         value=worker_call('--speed-all',[],Path(tmp)/'result.json',145)
         return value[0],value[1]
+
+
+def get_app_update():
+    # The worker releases networking and archive libraries when its check finishes.
+    with tempfile.TemporaryDirectory(prefix='codex-meter-app-update-') as tmp:
+        return worker_call('--app-update',[],Path(tmp)/'result.json',750)
+
+
+def app_update_worker():
+    app_updater.clean_stale_stages(DATA/'updates')
+    candidate=app_updater.latest_release(VERSION)
+    stage=None
+    if candidate:
+        def health(executable,version,folder):
+            output=folder/'health.json'
+            run([str(executable),'--health-check','--worker-output',str(output)],timeout=45)
+            result=read(output,{})
+            if not result.get('ok') or result.get('value',{}).get('version')!=version:
+                raise RuntimeError('New app failed its startup check')
+            output.unlink(missing_ok=True)
+        stage=app_updater.download_and_stage(candidate,DATA,health,STOP_EVENT.is_set)
+    return {'candidate':candidate,'stage':str(stage) if stage else None}
 
 
 def scan_speed():
@@ -402,10 +431,21 @@ class App:
         self.settings=load_settings();self.dark=self.appearance_dark()
         self.dirty=False;self._show_job=None
         self.data=load_snapshot(); self.busy=False; self.closed=False; self.job=None; self.results=queue.Queue()
+        self.app_update_results=queue.Queue();self.pending_app_update=None;self.app_update_detail=''
+        self.app_update_job=None;self.app_update_running=False
         self.storage_errors=[STATE_READ_ERRORS[str(path)] for path in (CONFIG,SNAPSHOT) if str(path) in STATE_READ_ERRORS]
         if self.storage_errors:
             self.data['status']='Could not read saved data or settings'
             self.data['details']='\n'.join(self.storage_errors)
+        failure=app_updater.previous_failure(DATA,VERSION)
+        if failure:
+            self.app_update_detail=f"App update v{failure['version']} failed; will retry automatically."
+            self.data['app_update_check']={'checked_at':failure['checked_at'],'retry':True}
+            if str(SNAPSHOT) not in STATE_READ_ERRORS:
+                try:
+                    save(SNAPSHOT,self.data)
+                    (DATA/'updates'/'last-failure.json').unlink(missing_ok=True)
+                except (OSError,ValueError,TypeError): pass
         if self.data.get('status','').startswith('Updated '):
             self.data['status']=re.sub(r'\s*·\s*\d+(?:\.\d+)?s(?=\s*·|$)','',self.data['status'])
         self.root=tk.Tk(); self.root.withdraw(); self.root.attributes('-alpha',0)
@@ -420,6 +460,8 @@ class App:
         self.root.update_idletasks();self.configure_window();self.compact_height();self.root.update_idletasks()
         self.setup_tray();self.schedule()
         self.publish_ready()
+        self.signal_update_ready()
+        self.schedule_app_update_check()
         if '--start-hidden' not in sys.argv: self.show()
     def configure_window(self):
         """Use native styles, without installing Python callbacks in the window procedure."""
@@ -697,65 +739,131 @@ class App:
         self.compact_requested_height=height
         self.root.geometry(f'500x{height}')
     def draw(self):
-        # Build off-screen while the current page stays intact, then swap once.
+        # Used for initial construction or an explicit rebuild, never for a refresh.
         previous=self.body
+        previous_widgets=getattr(self,'content_widgets',None)
+        previous_day1=getattr(self,'day1_grid',None)
         self.body=tk.Frame(self.canvas,bg=self.bg)
         try: self.draw_content()
         except Exception:
             self.body.destroy();self.body=previous
+            self.content_widgets=previous_widgets;self.day1_grid=previous_day1
             raise
         self.canvas.itemconfigure(self.body_window,window=self.body,width=self.canvas.winfo_width())
         self.body.bind('<Configure>',lambda event:self.canvas.configure(scrollregion=self.canvas.bbox('all')))
         previous.destroy()
 
     def draw_content(self):
-        limits=self.data.get('limits',{})
-        windows=[x for x in (limits.get('primary'),limits.get('secondary')) if x and x.get('usedPercent') is not None]
-        for index,window in enumerate(windows or [None]):
-            line=tk.Frame(self.body,bg=self.bg); line.pack(fill='x',pady=(0,10))
-            text=f"{remaining_percent(window['usedPercent']):g}% remaining" if window else 'Usage unavailable'
-            self.label(line,text,16,'#222426',anchor='w').pack(side='left')
-            if index==0:
-                for symbol,command,tip in [('⚙',self.settings_dialog,'Settings'),('↻',self.refresh,'Refresh')]:
-                    button=tk.Button(line,text=symbol,command=command,font=('Segoe UI Symbol',15),relief='flat',bd=0,bg=self.bg,fg=self.color('#72797d'),activebackground=self.color('#f2f4f3'),activeforeground=self.color('#222426'),cursor='hand2',padx=5,takefocus=False)
-                    button.pack(side='right',padx=2);Tooltip(button,tip)
-        u=self.data.get('usage',{}); cols=tk.Frame(self.body,bg=self.bg); cols.pack(fill='x')
+        widgets={'usage':{},'speed':{},'empty':{},'grids':{}}
+        self.content_widgets=widgets
+        limits=tk.Frame(self.body,bg=self.bg);limits.pack(fill='x')
+        line=tk.Frame(limits,bg=self.bg);line.pack(fill='x',pady=(0,10))
+        widgets['primary']=self.label(line,'',16,'#222426',anchor='w')
+        widgets['primary'].pack(side='left')
+        for symbol,command,tip in [('⚙',self.settings_dialog,'Settings'),('↻',self.refresh,'Refresh')]:
+            button=tk.Button(line,text=symbol,command=command,font=('Segoe UI Symbol',15),relief='flat',bd=0,bg=self.bg,fg=self.color('#72797d'),activebackground=self.color('#f2f4f3'),activeforeground=self.color('#222426'),cursor='hand2',padx=5,takefocus=False)
+            button.pack(side='right',padx=2);Tooltip(button,tip)
+        secondary=tk.Frame(limits,bg=self.bg)
+        widgets['secondary_frame']=secondary
+        widgets['secondary']=self.label(secondary,'',16,'#222426',anchor='w')
+        widgets['secondary'].pack(side='left')
+        cols=tk.Frame(self.body,bg=self.bg); cols.pack(fill='x')
         for index,(title,key,cost) in enumerate([('This month','month_tokens','month_cost'),('All time','total_tokens','total_cost')]):
             cols.columnconfigure(index,weight=1,uniform='totals')
             f=tk.Frame(cols,bg=self.bg); f.grid(row=0,column=index,sticky='ew')
             self.label(f,title,10,anchor='w').pack(fill='x')
-            n=u.get(key); n=(n+self.settings['reserve']) if n is not None and key=='total_tokens' else n
-            self.label(f,f'{n:,}' if n is not None else '—',13,'#292d30',font='Consolas',anchor='w').pack(fill='x',pady=(3,1))
-            c=u.get(cost); price=self.label(f,f'${c:,.2f}' if c is not None else '—',11,'#73777b',anchor='w'); price.pack(fill='x')
+            number=self.label(f,'',13,'#292d30',font='Consolas',anchor='w');number.pack(fill='x',pady=(3,1))
+            price=self.label(f,'',11,'#73777b',anchor='w');price.pack(fill='x')
+            widgets['usage'][key]=number;widgets['usage'][cost]=price
             Tooltip(price,'Estimated API-equivalent cost (USD)')
-        d=self.data.get('delta')
-        delta=self.label(self.body,f'{d:+,} tokens' if d is not None else '—',10,'#185c40',anchor='w')
-        delta.pack(fill='x',pady=(7,10)); Tooltip(delta,delta_tooltip(self.data) if d is not None else 'Available after the next successful refresh')
+        delta=self.label(self.body,'',10,'#185c40',anchor='w')
+        delta.pack(fill='x',pady=(7,10));widgets['delta']=delta
+        Tooltip(delta,lambda:delta_tooltip(self.data) if self.data.get('delta') is not None else 'Available after the next successful refresh')
         tk.Frame(self.body,bg=self.color('#e9eaec'),height=1).pack(fill='x')
         self.label(self.body,'Speed',12,'#292d30',anchor='w').pack(fill='x',pady=(11,7))
-        speed=self.data.get('speed',{})
         for days in ('1','14'):
             period=tk.Frame(self.body,bg=self.bg);period.pack(fill='x',pady=(6,7))
             self.period_badge(period,'14 days' if days=='14' else '1 day').pack(side='left')
             grid=tk.Frame(self.body,bg=self.bg); grid.pack(fill='x',pady=(0,6))
             if days=='1': self.day1_grid=grid
+            widgets['grids'][days]=grid;widgets['speed'][days]={}
             for i,v in enumerate(['Model','Normal','Fast','Ratio']):
                 self.label(grid,v,9,'#989b9e',anchor='w' if i==0 else 'e').grid(row=0,column=i,sticky='ew',pady=(0,2))
                 grid.columnconfigure(i,weight=4 if i==0 else 1)
-            rows=speed.get(days,[])
-            for idx,row in enumerate(rows,1):
-                values=[row['model'],row['normal'].strip('()~*†'),row['fast'].strip('()~*†'),row['ratio'].strip('()~*†')]
-                for col,val in enumerate(values):
-                    label=self.label(grid,val,10,ratio_color(row['ratio']) if col==3 else '#353a3e',font='Consolas',anchor='w' if col==0 else 'e')
-                    label.grid(row=idx,column=col,sticky='ew',pady=1)
-                    if col in (1,2):
-                        mode='normal' if col==1 else 'fast'; count=row[mode+'_n']
-                        Tooltip(label,f"{val} effective tokens/s\nApproximately {count} timed responses" if val not in ('·','—') else 'No timed responses')
-                    elif col==3:
-                        Tooltip(label,'Fast ÷ Normal'+ ('\nLimited sample size' if '(' in row['ratio'] else ''))
-            if not rows: self.label(grid,'No available samples',10,anchor='w').grid(row=1,column=0,columnspan=4,sticky='w')
+            widgets['empty'][days]=self.label(grid,'No available samples',10,anchor='w')
+        self.update_content()
         if not self.busy: self.status.config(text=self.data.get('status','Ready'))
         self.status_detail=self.data.get('details','')
+
+    @staticmethod
+    def set_widget_options(widget,**options):
+        changes={key:value for key,value in options.items() if str(widget.cget(key))!=str(value)}
+        if changes: widget.configure(**changes)
+
+    def update_content(self,source=None):
+        """Update only the widgets owned by a changed source, keeping the page intact."""
+        widgets=self.content_widgets
+        if source in (None,'limits'):
+            limits=self.data.get('limits',{})
+            windows=[x for x in (limits.get('primary'),limits.get('secondary')) if x and x.get('usedPercent') is not None]
+            text=lambda window:f"{remaining_percent(window['usedPercent']):g}% remaining"
+            self.set_widget_options(widgets['primary'],text=text(windows[0]) if windows else 'Usage unavailable')
+            secondary=widgets['secondary_frame']
+            if len(windows)>1:
+                self.set_widget_options(widgets['secondary'],text=text(windows[1]))
+                if not secondary.winfo_manager(): secondary.pack(fill='x',pady=(0,10))
+            elif secondary.winfo_manager(): secondary.pack_forget()
+        if source in (None,'usage'):
+            usage=self.data.get('usage',{})
+            for key in ('month_tokens','total_tokens'):
+                number=usage.get(key)
+                if number is not None and key=='total_tokens': number+=self.settings['reserve']
+                self.set_widget_options(widgets['usage'][key],text=f'{number:,}' if number is not None else '—')
+            for key in ('month_cost','total_cost'):
+                cost=usage.get(key)
+                self.set_widget_options(widgets['usage'][key],text=f'${cost:,.2f}' if cost is not None else '—')
+            delta=self.data.get('delta')
+            self.set_widget_options(widgets['delta'],text=f'{delta:+,} tokens' if delta is not None else '—')
+        if source in (None,'speed'):
+            for days in ('1','14'): self.update_speed(days,self.data.get('speed',{}).get(days,[]))
+
+    def update_speed(self,days,rows):
+        widgets=self.content_widgets;grid=widgets['grids'][days];existing=widgets['speed'][days]
+        wanted=set();occurrences={}
+        for index,row in enumerate(rows,1):
+            model=row['model'];occurrence=occurrences.get(model,0);occurrences[model]=occurrence+1
+            key=(model,occurrence);wanted.add(key)
+            item=existing.get(key)
+            if item is None:
+                labels=[];tips={}
+                for col in range(4):
+                    label=self.label(grid,'',10,'#353a3e',font='Consolas',anchor='w' if col==0 else 'e')
+                    label.grid(row=index,column=col,sticky='ew',pady=1);labels.append(label)
+                    if col in (1,2,3): tips[col]=Tooltip(label,'')
+                item={'labels':labels,'tips':tips,'row':index};existing[key]=item
+            elif item['row']!=index:
+                for label in item['labels']: label.grid_configure(row=index)
+                item['row']=index
+            values=[model,row['normal'].strip('()~*†'),row['fast'].strip('()~*†'),row['ratio'].strip('()~*†')]
+            for col,value in enumerate(values):
+                options={'text':value}
+                if col==3: options['fg']=self.color(ratio_color(row['ratio']))
+                self.set_widget_options(item['labels'][col],**options)
+                if col in (1,2):
+                    mode='normal' if col==1 else 'fast';count=row[mode+'_n']
+                    tip=f"{value} effective tokens/s\nApproximately {count} timed responses" if value not in ('·','—') else 'No timed responses'
+                elif col==3: tip='Fast ÷ Normal'+ ('\nLimited sample size' if '(' in row['ratio'] else '')
+                else: continue
+                tooltip=item['tips'][col]
+                if tooltip.text!=tip:
+                    tooltip.hide();tooltip.text=tip
+        for key in set(existing)-wanted:
+            item=existing.pop(key)
+            for label in item['labels']: label.destroy()
+        empty=widgets['empty'][days]
+        if rows:
+            if empty.winfo_manager(): empty.grid_remove()
+        elif not empty.winfo_manager(): empty.grid(row=1,column=0,columnspan=4,sticky='w')
     def build_about(self,parent):
         footer=tk.Frame(parent,bg=self.bg);footer.pack(fill='x',pady=(14,0))
         tk.Frame(footer,bg=self.color('#e9eaec'),height=1).pack(fill='x',pady=(0,12))
@@ -771,14 +879,14 @@ class App:
         self.settings_window=win
         box=tk.Frame(win,bg=self.bg);box.pack(padx=30,pady=26)
         a=tk.StringVar(value=self.settings.get('appearance','system').title())
-        v=tk.StringVar(value='Manual' if not self.settings['interval'] else f"{self.settings['interval']} hours")
+        v=tk.StringVar(value=next(name for name,value in INTERVALS.items() if value==self.settings['interval']))
         r=tk.StringVar(value=str(self.settings['reserve']))
         self.settings_vars={'appearance':a,'interval':v,'reserve':r}
         self.settings_save_job=None
         traces=[]
         for row,(title,variable,values) in enumerate([
             ('Appearance',a,['System','Light','Dark']),
-            ('Refresh interval',v,['Manual','2 hours','4 hours','6 hours','8 hours','12 hours'])]):
+            ('Refresh interval',v,list(INTERVALS))]):
             self.label(box,title,11,anchor='w').grid(row=row,column=0,sticky='w',pady=6)
             combo=ttk.Combobox(box,textvariable=variable,values=values,state='readonly',width=18,font=('Segoe UI',10),style='Meter.TCombobox')
             combo.configure(postcommand=lambda widget=combo:self.style_dropdown(widget))
@@ -803,9 +911,9 @@ class App:
             try:
                 num=int(r.get().replace(',',''))
                 mode=a.get().lower()
-                interval=0 if v.get()=='Manual' else int(v.get().split()[0])
-                if num<0 or mode not in ('system','light','dark') or interval not in (0,2,4,6,8,12): raise ValueError()
-            except (ValueError,IndexError):
+                interval=INTERVALS[v.get()]
+                if num<0 or mode not in ('system','light','dark'): raise ValueError()
+            except (ValueError,KeyError):
                 if not quiet: messagebox.showerror('Settings','Enter a non-negative whole number.',parent=win)
                 return False
             updated={'interval':interval,'reserve':num,'appearance':mode}
@@ -817,7 +925,7 @@ class App:
             previous=self.settings;self.settings=updated
             if previous.get('interval')!=interval: self.schedule()
             self.sync_theme(system_dark())
-            if previous.get('reserve')!=num: self.draw()
+            if previous.get('reserve')!=num: self.render_results('usage')
             if close:
                 for variable,token in traces: variable.trace_remove('write',token)
                 self.close_settings=None;win.destroy()
@@ -857,6 +965,7 @@ class App:
         return previous+self.settings['interval']*3600
     def status_tooltip_text(self):
         text=self.status_detail or 'Latest refresh result'
+        if getattr(self,'app_update_detail',''): text+='\n'+self.app_update_detail
         if not self.settings['interval']: return text+'\nAutomatic refresh: off'
         if self.busy: return text+'\nRefresh in progress'
         deadline=self.refresh_deadline()
@@ -903,15 +1012,16 @@ class App:
                 try: save(SNAPSHOT,self.data)
                 except OSError as exc: self.refresh_errors.append('save: '+str(exc)[:120])
                 # Display each source immediately instead of waiting for the slowest one.
-                self.render_results()
+                self.render_results(name)
             if not self.pending:
                 self.finish()
                 return
         waiting=', '.join(sorted(self.pending))
-        if self.root.state()!='withdrawn':
+        visible=self.root.state() not in ('withdrawn','iconic')
+        if visible:
             text=f'Refreshing {waiting} · {time.monotonic()-self.refresh_started:.0f}s'
             if self.status.cget('text')!=text: self.status.config(text=text)
-        self.root.after(1000 if self.root.state()=='withdrawn' else 500,self.check_results)
+        self.root.after(500 if visible else 1000,self.check_results)
     def finish(self):
         if self.closed: return
         updated='Updated '+datetime.now().strftime('%H:%M')
@@ -928,7 +1038,90 @@ class App:
         finally:
             self.busy=False; self.schedule()
         self.status.config(text=self.data.get('status','Ready'))
-        self.render_results()
+        self.status_detail=self.data.get('details','')
+        self.maybe_apply_app_update()
+
+    def signal_update_ready(self):
+        if '--update-ready' not in sys.argv: return
+        try:
+            marker=Path(sys.argv[sys.argv.index('--update-ready')+1]).resolve()
+            stage=marker.parent
+            if (marker.name=='ready.json' and stage.parent==(DATA/'updates').resolve()
+                    and re.fullmatch(r'update-[0-9a-f]{32}',stage.name)):
+                save(marker,{'version':VERSION,'pid':os.getpid()})
+        except (OSError,IndexError,ValueError): pass
+
+    def schedule_app_update_check(self):
+        if self.app_update_job is not None:
+            self.root.after_cancel(self.app_update_job);self.app_update_job=None
+        target=app_updater.installed_root(__file__,sys.executable,getattr(sys,'frozen',False),DATA)
+        self.app_update_root=target
+        if target is None or self.closed or self.app_update_running or self.pending_app_update is not None: return
+        delay=max(15,min(APP_UPDATE_DEADLINE_CHECK,self.app_update_due()-time.time()))
+        self.app_update_job=self.root.after(round(delay*1000),self.app_update_tick)
+
+    def app_update_due(self):
+        previous=self.data.get('app_update_check',{})
+        checked=previous.get('checked_at',0) if isinstance(previous,dict) else 0
+        retry=previous.get('retry',False) if isinstance(previous,dict) else False
+        if type(checked) not in (int,float) or not math.isfinite(checked) or checked>time.time(): checked=0
+        interval=APP_UPDATE_RETRY if retry else APP_UPDATE_INTERVAL
+        return checked+interval
+
+    def app_update_tick(self):
+        self.app_update_job=None
+        if self.closed or self.app_update_running or self.pending_app_update is not None: return
+        if self.app_update_due()<=time.time(): self.check_app_updates()
+        else: self.schedule_app_update_check()
+
+    def check_app_updates(self):
+        if self.closed or self.app_update_running or self.pending_app_update is not None: return
+        self.app_update_running=True
+        def work():
+            try:
+                result=get_app_update()
+                stage=Path(result['stage']) if result.get('stage') else None
+                self.app_update_results.put((result['candidate'],stage,None))
+            except Exception as exc:
+                self.app_update_results.put((None,None,str(exc).replace('\n',' ')[:160]))
+        threading.Thread(target=work,daemon=True).start()
+        self.root.after(1000,self.poll_app_update)
+
+    def poll_app_update(self):
+        if self.closed: return
+        try: candidate,stage,error=self.app_update_results.get_nowait()
+        except queue.Empty:
+            self.root.after(1000,self.poll_app_update);return
+        self.app_update_running=False
+        if candidate:
+            self.pending_app_update=(candidate['version'],stage)
+            self.app_update_detail=f"App v{candidate['version']} is ready; installs automatically when hidden in the tray."
+            self.maybe_apply_app_update()
+            return
+        self.app_update_detail=('App update check failed; will retry automatically: '+error) if error is not None else 'App is up to date.'
+        self.data['app_update_check']={'checked_at':time.time(),'retry':error is not None}
+        if str(SNAPSHOT) not in STATE_READ_ERRORS:
+            try: save(SNAPSHOT,self.data)
+            except (OSError,ValueError,TypeError): pass
+        self.schedule_app_update_check()
+
+    def begin_app_update(self,relaunch):
+        version,stage=self.pending_app_update
+        app_updater.start_installer(stage,self.app_update_root,DATA,ROOT/'scripts/apply-update.ps1',version,relaunch)
+
+    def maybe_apply_app_update(self):
+        if (not getattr(self,'pending_app_update',None) or self.closed or self.busy
+                or self.root.state()!='withdrawn'): return
+        try:
+            self.save_exit_state(require_readable=True)
+            self.begin_app_update(relaunch=True)
+        except (OSError,ValueError,TypeError) as exc:
+            self.app_update_detail='Could not install app update; will retry: '+str(exc)[:160]
+            self.root.after(10*60*1000,self.maybe_apply_app_update)
+            return
+        self.pending_app_update=None
+        self.shutdown()
+
     def publish_ready(self):
         if os.name=='nt' and hasattr(self,'window_handle'):
             import ctypes
@@ -941,19 +1134,21 @@ class App:
         if event.widget is self.root:
             # Tk can recreate the native wrapper on restore; never keep its old HWND.
             self.configure_window()
-            if self.dirty: self.draw();self.dirty=False
+            if self.dirty: self.update_content();self.dirty=False
             self.publish_ready()
             if self._show_job is None: self._show_job=self.root.after_idle(self.reveal)
     def on_focus(self,event):
         if event.widget is self.root and not self.busy and self.settings['interval']:
             self.schedule()
+        if event.widget is self.root and getattr(self,'app_update_root',None):
+            self.schedule_app_update_check()
     def reveal(self):
         self._show_job=None
         if not self.closed and self.root.state() in ('normal','zoomed'):
             self.root.attributes('-alpha',1)
-    def render_results(self):
-        if self.root.state()=='withdrawn': self.dirty=True
-        else: self.draw()
+    def render_results(self,source=None):
+        if self.root.state() in ('withdrawn','iconic'): self.dirty=True
+        else: self.update_content(source)
     def setup_tray(self):
         im=load_icon(32)
         self.tray=pystray.Icon('Codex Meter',im,'Codex Meter',pystray.Menu(pystray.MenuItem('Open',lambda:self.root.after(0,self.show),default=True),pystray.MenuItem('Refresh',lambda:self.root.after(0,self.refresh)),pystray.MenuItem('Quit',lambda:self.root.after(0,self.quit))))
@@ -969,26 +1164,38 @@ class App:
             except tk.TclError: pass
         if getattr(self,'settings_window',None) is not None and self.settings_window.winfo_exists(): self.settings_window.destroy()
         self.root.attributes('-alpha',0);self.root.withdraw()
+        self.maybe_apply_app_update()
     def show(self):
         self.sync_theme(system_dark())
         if not self.busy and self.settings['interval']: self.schedule()
-        if self.dirty: self.draw(); self.dirty=False
+        if self.dirty: self.update_content(); self.dirty=False
         if self.root.state() in ('withdrawn','iconic'): self.root.deiconify()
         self.root.lift(); self.root.focus_force()
-    def quit(self):
-        close=getattr(self,'close_settings',None)
-        if close is not None and not close(): return
-        try:
-            # Never overwrite a temporarily unreadable file with fallback defaults.
-            if str(CONFIG) not in STATE_READ_ERRORS: save(CONFIG,self.settings)
-            if any(key in self.data for key in ('usage','speed','limits')): save(SNAPSHOT,self.data)
-        except (OSError,ValueError,TypeError) as exc:
-            messagebox.showerror('Codex Meter','Could not save before quitting: '+str(exc),parent=self.root)
-            return
+    def save_exit_state(self,require_readable=False):
+        # Never overwrite a temporarily unreadable file with fallback defaults.
+        if require_readable and any(str(path) in STATE_READ_ERRORS for path in (CONFIG,SNAPSHOT)):
+            raise OSError('Saved settings or results are not readable')
+        if str(CONFIG) not in STATE_READ_ERRORS: save(CONFIG,self.settings)
+        if str(SNAPSHOT) not in STATE_READ_ERRORS and any(key in self.data for key in ('usage','speed','limits')):
+            save(SNAPSHOT,self.data)
+
+    def shutdown(self):
         self.closed=True
         if hasattr(self,'theme_watcher'): self.theme_watcher.stop()
         cancel_scans()
         self.tray.stop(); self.root.destroy()
+
+    def quit(self):
+        close=getattr(self,'close_settings',None)
+        if close is not None and not close(): return
+        try: self.save_exit_state()
+        except (OSError,ValueError,TypeError) as exc:
+            messagebox.showerror('Codex Meter','Could not save before quitting: '+str(exc),parent=self.root)
+            return
+        if self.pending_app_update is not None:
+            try: self.begin_app_update(relaunch=False)
+            except (OSError,ValueError,TypeError): pass  # The next launch will check again.
+        self.shutdown()
     def run(self):
         def changed(dark):
             if not self.closed:
@@ -1008,6 +1215,11 @@ def worker_main():
     buffer=io.StringIO()
     try:
         if args[0]=='--limits': value=limits_worker()
+        elif args[0]=='--app-update': value=app_update_worker()
+        elif args[0]=='--health-check':
+            import ssl
+            ssl.create_default_context();load_gui()
+            value={'version':VERSION,'pid':os.getpid()}
         elif args[0]=='--diagnose':
             value={}
             def measure(name,fn):
@@ -1068,6 +1280,7 @@ def start_single_instance():
     if not handle: raise ctypes.WinError(ctypes.get_last_error())
     try:
         if existed:
+            if '--start-hidden' in sys.argv: return
             # Never expose a partially built window during rapid double-click launches.
             for attempt in range(160):
                 hwnd=find_ready_window()

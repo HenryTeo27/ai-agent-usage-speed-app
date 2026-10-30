@@ -10,10 +10,12 @@ if (Test-Path -LiteralPath $packaged) {
     $arguments = ''
     $icon = Join-Path $targetRoot '_internal\assets\codex-gradient.ico'
 } else {
-    foreach ($file in @('meter.py', 'system_theme.py', 'requirements.txt')) {
+    foreach ($file in @('meter.py', 'system_theme.py', 'app_updater.py', 'requirements.txt')) {
         Copy-Item -LiteralPath (Join-Path $sourceRoot $file) -Destination $targetRoot -Force
     }
     Copy-Item -LiteralPath (Join-Path $sourceRoot 'assets') -Destination $targetRoot -Recurse -Force
+    New-Item -ItemType Directory -Force -Path (Join-Path $targetRoot 'scripts') | Out-Null
+    Copy-Item -LiteralPath (Join-Path $sourceRoot 'scripts\apply-update.ps1') -Destination (Join-Path $targetRoot 'scripts') -Force
     $python = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe'
     if (-not (Test-Path -LiteralPath $python)) {
         $found = Get-Command python.exe -ErrorAction SilentlyContinue

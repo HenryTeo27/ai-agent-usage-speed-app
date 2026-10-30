@@ -20,11 +20,12 @@ The external tools still read and parse local logs. This computer had roughly 5.
 
 ## Changes
 
-- Load Tk, pystray and image modules only for the main window. Worker and duplicate-launch processes skip them.
+- Load Tk, pystray and image modules only for the main window. Scan and duplicate-launch processes skip them; a short-lived update health check imports them without opening a window.
 - Decode a small ICO frame for the tray and header instead of retaining the full-resolution PNG.
 - Run speed download and parsing in one isolated worker. Its parsing memory is released when it exits.
-- Skip window-body redraws while hidden. Redraw the latest values once when restored.
+- Keep the window and its widgets in place during refresh. Update changed values and table rows only; while hidden or minimized, defer those updates until the window is restored.
 - Check refresh results every 0.5 seconds while visible and every 1 second while hidden. Stop checking results when the refresh finishes. In automatic mode, a lightweight deadline timer runs at most once per minute between scans; it starts no worker until due. Manual mode has no deadline timer.
+- Run app-update downloads and archive checks in a temporary worker. Its networking and archive libraries leave memory when it exits. An idle deadline timer wakes at most once per hour and does not contact the network until a check is due.
 - Terminate owned command trees when the user quits, including npm/native-tool children. A regression test verifies this behavior.
 - Preserve single-pass speed parsing, upstream statistics, latest-tool checks and immediate per-source updates.
 

@@ -27,13 +27,13 @@ if sys.argv[1]=='write':
               'delta':20,'status':'Updated 10:00','last_refresh_at':time.time()}
     app.settings_dialog()
     app.settings_vars['appearance'].set('Dark')
-    app.settings_vars['interval'].set('8 hours')
+    app.settings_vars['interval'].set('30 minutes')
     app.settings_vars['reserve'].set('321')
     # Deliberately quit without pressing Save or waiting for the edit debounce.
     app.busy=True
     app.quit()
 else:
-    assert app.settings=={'appearance':'dark','interval':8,'reserve':321},app.settings
+    assert app.settings=={'appearance':'dark','interval':0.5,'reserve':321},app.settings
     assert app.data['usage']['total_tokens']==1000
     assert app.data['speed']=={'1':[],'14':[]}
     assert app.data['delta']==20

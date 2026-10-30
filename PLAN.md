@@ -32,3 +32,11 @@ Only the latest snapshot and settings are retained, plus the working speed scrip
 - Track and terminate owned scan process trees on quit.
 - Verified successful real packaged scans, hidden restoration and 10 regression tests.
 - Recorded visible/tray idle samples and sampled refresh-tree resource use in docs/performance.md. No hardware power measurement was performed.
+
+## v1.0.18 refresh and app updates
+
+- Keep the three data sources concurrent. Update only changed widgets, and defer hidden or minimized window updates until restore.
+- Add 30-minute and 1-hour refresh choices. Default new installations to 2 hours and preserve existing settings.
+- Check GitHub for a newer stable app release in the background. Verify its release digest and run a hidden startup check before installation.
+- Apply ready updates when the app is idle in the tray, or when the user quits. Keep settings and the latest snapshot. Restore the previous app if the replacement cannot start, and wait before retrying a failed update.
+- Keep development and portable runs separate from the installed app's updater. Test update downloads, path safety, retries and rollback with isolated files and hidden processes.

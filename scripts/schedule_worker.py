@@ -2,7 +2,9 @@
 import json
 from pathlib import Path
 import sys
+import threading
 import time
+from types import SimpleNamespace
 
 if '_codex_meter_runtime' in sys.modules:
     meter=sys.modules['_codex_meter_runtime']
@@ -18,14 +20,27 @@ meter.tk.Toplevel.grab_set=lambda window:None
 old={'month':'2026-10','month_tokens':10,'month_cost':1,'total_tokens':111,'total_cost':2}
 meter.save(meter.CONFIG,{'interval':4,'reserve':0,'appearance':'system'})
 meter.save(meter.SNAPSHOT,{'usage':old,'limits':{},'speed':{'1':[],'14':[]},'last_refresh_at':time.time()-3*3600})
-meter.get_usage=lambda:{**old,'total_tokens':130}
-meter.get_limits=lambda:{}
-meter.get_speed=lambda:({'1':[],'14':[]},'')
+barrier=threading.Barrier(3)
+def source(value):
+    def run():
+        barrier.wait(timeout=4)
+        return value
+    return run
+meter.get_usage=source({**old,'total_tokens':130})
+meter.get_limits=source({})
+meter.get_speed=source(({'1':[],'14':[]},''))
 app=meter.App();result={'changed':False,'completed':False,'error':None}
+body=app.body
+def reject_rebuild(): raise AssertionError('Refresh rebuilt the page')
+app.draw=reject_rebuild
 def change():
     try:
         assert not app.busy
-        app.settings_dialog();app.settings_vars['interval'].set('2 hours')
+        app.settings_dialog()
+        for label,hours in (('30 minutes',0.5),('1 hour',1)):
+            app.settings_vars['interval'].set(label)
+            assert meter.read(meter.CONFIG,{})['interval']==hours
+        app.settings_vars['interval'].set('2 hours')
         result['changed']=meter.read(meter.CONFIG,{})['interval']==2
     except Exception as exc:
         result['error']=str(exc);app.root.quit()
@@ -40,5 +55,8 @@ try:
     assert result['changed'] and result['completed'],result
     assert app.data['delta']==19 and 'last_refresh_attempt_at' in meter.read(meter.SNAPSHOT,{})
     assert app.root.state()=='withdrawn' and app.settings_window.state()=='withdrawn'
+    assert not app.refresh_errors,app.refresh_errors
+    app.on_map(SimpleNamespace(widget=app.root))
+    assert app.body is body and app.content_widgets['usage']['total_tokens'].cget('text')=='130'
 finally: app.root.destroy()
 print(json.dumps({'passed':True,'automatic_refresh':'completed','settings_saved':True}))

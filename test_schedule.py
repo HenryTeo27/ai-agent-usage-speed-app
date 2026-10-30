@@ -50,6 +50,15 @@ class SchedulingTests(unittest.TestCase):
         self.root.advance(3599);self.assertEqual(self.threads.call_count,0)
         self.root.advance(1);self.assertEqual(self.threads.call_count,1)
 
+    def test_new_short_intervals_count_from_latest_completed_refresh(self):
+        for number,interval in enumerate((0.5,1),1):
+            with self.subTest(hours=interval):
+                self.app.settings['interval']=interval;self.app.schedule()
+                self.root.advance(interval*3600-1)
+                self.assertEqual(self.threads.call_count,number-1)
+                self.root.advance(1);self.assertEqual(self.threads.call_count,number)
+                self.app.finish()
+
     def test_manual_refresh_cancels_old_timer_and_restarts_from_completion(self):
         self.app.settings['interval']=2;self.app.schedule()
         self.root.advance(3600);self.app.refresh()
