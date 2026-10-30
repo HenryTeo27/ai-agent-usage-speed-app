@@ -9,6 +9,7 @@ import sys, os, json, subprocess, threading, tempfile, re, time, shutil, math
 from pathlib import Path
 from datetime import datetime
 import app_updater
+from sources import codex_homes, source_id, source_label, read_auth_mode, configured_api_keys
 from system_theme import system_dark, ThemeWatcher
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 sys.path.insert(0, str(ROOT / 'vendor'))
@@ -40,7 +41,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.0.18'
+VERSION = '1.1.0'
 REPOSITORY = 'https://github.com/HenryTeo27/ai-agent-usage-speed-app'
 CONTENT_PAD = 28
 SETTINGS_WRAP = 450
@@ -183,6 +184,10 @@ def last_refresh_time(data, snapshot=None):
 
 def apply_usage_result(data,value,previous,observed_at):
     """One adjacent pair only; the reserve adjustment never enters this calculation."""
+    if previous is not None and ('sources' in value or 'sources' in previous):
+        old={item['source'] for item in previous.get('sources',[]) if 'source' in item}
+        new={item['source'] for item in value.get('sources',[]) if 'source' in item}
+        if old!=new: previous=None
     before=previous['total_tokens'] if previous is not None else None
     after=value['total_tokens']
     previous_at=data.get('updated_at',{}).get('usage')
@@ -221,15 +226,26 @@ def run(args, timeout=180, env=None):
 def limits_worker():
     p = subprocess.Popen([find_codex(), 'app-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', creationflags=CREATE)
     try:
-        for msg in [{'id':1,'method':'initialize','params':{'clientInfo':{'name':'codex-meter','version':'1.0'}}}, {'method':'initialized'}, {'id':2,'method':'account/rateLimits/read'}]:
+        for msg in [{'id':1,'method':'initialize','params':{'clientInfo':{'name':'codex-meter','version':'1.0'}}}, {'method':'initialized'}, {'id':2,'method':'account/read','params':{'refreshToken':False}}]:
             p.stdin.write(json.dumps(msg)+'\n'); p.stdin.flush()
         for line in p.stdout:
             data=json.loads(line)
             if data.get('id') == 2:
-                if 'error' in data: raise RuntimeError(str(data['error']))
-                return data['result']['rateLimits']
-        raise RuntimeError('No rate limit response')
-    finally: p.terminate()
+                if 'error' in data: raise RuntimeError('Account information unavailable')
+                account=data.get('result',{}).get('account') or {}
+                kind=account.get('type')
+                result={'kind':kind,'email':account.get('email'),'plan':account.get('planType')}
+                if kind!='chatgpt': return result
+                p.stdin.write(json.dumps({'id':3,'method':'account/rateLimits/read'})+'\n');p.stdin.flush()
+            elif data.get('id') == 3:
+                result['limits']=data.get('result',{}).get('rateLimits') or {}
+                if 'error' in data: result['error']='Rate limits unavailable'
+                return result
+        raise RuntimeError('No account response')
+    finally:
+        p.terminate()
+        try: p.wait(timeout=3)
+        except subprocess.TimeoutExpired: p.kill();p.wait()
 
 def find_codex():
     override=os.environ.get('CODEX_APP_RUNTIME_CLI_PATH')
@@ -251,17 +267,42 @@ def worker_call(mode, args, output, timeout, env=None):
 
 
 def get_limits():
-    with tempfile.TemporaryDirectory(prefix='codex-meter-limits-') as tmp:
-        return worker_call('--limits',[],Path(tmp)/'result.json',35)
+    def query(home):
+        env=os.environ.copy();env['CODEX_HOME']=str(home)
+        env.pop('OPENAI_API_KEY',None);env.pop('CODEX_API_KEY',None)
+        try:
+            with tempfile.TemporaryDirectory(prefix='codex-meter-limits-') as tmp:
+                account=worker_call('--limits',[],Path(tmp)/'result.json',35,env=env)
+        except Exception:
+            account={'kind':read_auth_mode(home),'error':'Account or limits unavailable'}
+        if not account.get('kind'):
+            return None,source_label(home) if account.get('error') else None
+        account['source']=source_id(home);account['label']=source_label(home)
+        return account,source_label(home) if account.get('error') else None
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results=list(pool.map(query,codex_homes()))
+    accounts=[item for item,error in results if item]
+    errors=[label for item,label in results if label]
+    accounts.extend(configured_api_keys())
+    first=next((item.get('limits',{}) for item in accounts if item.get('kind')=='chatgpt'),{})
+    return {**first,'accounts':accounts,'errors':errors}
 
 def get_usage():
     npx = shutil.which('npx.cmd') or shutil.which('npx')
     if not npx: raise RuntimeError('Node.js / npx not found')
-    data = json.loads(run([npx, '--yes', 'ccusage@latest', 'codex', 'monthly', '--json'], timeout=180))
     month = datetime.now().strftime('%Y-%m')
-    rows = data['monthly']; total = data['totals']
-    current = next((x for x in rows if x['month'] == month), {'totalTokens':0,'costUSD':0})
-    return {'month':month, 'month_tokens':current['totalTokens'], 'month_cost':current['costUSD'], 'total_tokens':total['totalTokens'], 'total_cost':total['costUSD']}
+    sources=[]
+    for home in codex_homes():
+        if not any((home/name).is_dir() for name in ('sessions','archived_sessions')): continue
+        env=os.environ.copy();env['CODEX_HOME']=str(home)
+        env.pop('OPENAI_API_KEY',None);env.pop('CODEX_API_KEY',None)
+        data=json.loads(run([npx, '--yes', 'ccusage@latest', 'codex', 'monthly', '--json'],timeout=180,env=env))
+        rows=data['monthly'];total=data['totals']
+        current=next((x for x in rows if x['month']==month),{'totalTokens':0,'costUSD':0})
+        sources.append({'source':source_id(home),'label':source_label(home),
+                        'month_tokens':current['totalTokens'],'month_cost':current['costUSD'],
+                        'total_tokens':total['totalTokens'],'total_cost':total['costUSD']})
+    return {'month':month,**{key:sum(item[key] for item in sources) for key in ('month_tokens','month_cost','total_tokens','total_cost')},'sources':sources}
 
 def parse_speed(raw):
     lines=raw.splitlines()
@@ -280,7 +321,8 @@ def parse_speed(raw):
 
 def get_speed():
     with tempfile.TemporaryDirectory(prefix='codex-meter-speed-') as tmp:
-        value=worker_call('--speed-all',[],Path(tmp)/'result.json',145)
+        env=os.environ.copy();env.pop('OPENAI_API_KEY',None);env.pop('CODEX_API_KEY',None)
+        value=worker_call('--speed-all',[],Path(tmp)/'result.json',145,env=env)
         return value[0],value[1]
 
 
@@ -352,7 +394,6 @@ def speed_batch(script):
     import orjson
     engine.json=SimpleNamespace(loads=orjson.loads,dumps=json.dumps,JSONDecodeError=orjson.JSONDecodeError)
     now=datetime.now(timezone.utc)
-    home=Path(os.environ.get('CODEX_HOME') or Path.home()/'.codex')
     original_find=engine.find_rollouts
     def recent_rollouts(home,*args,**kwargs):
         result=[]
@@ -362,22 +403,39 @@ def speed_batch(script):
             except OSError: result.append(path)
         return result
     engine.find_rollouts=recent_rollouts
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        samples,totals=engine.load_samples(home,None,1)
-    if totals.get('unreadable_files'): raise RuntimeError(f"Cannot read {totals['unreadable_files']} Codex log files")
+    groups=[];samples=[];seen=set();totals={}
+    for home in codex_homes():
+        if not any((home/name).is_dir() for name in ('sessions','archived_sessions')): continue
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            local,local_totals=engine.load_samples(home,None,1)
+        if local_totals.get('unreadable_files'): raise RuntimeError(f"Cannot read Codex log files in {source_label(home)}")
+        groups.append((home,local,local_totals))
+        for sample in local:
+            identity=getattr(sample,'response_id',None)
+            if identity and identity in seen: continue
+            if identity: seen.add(identity)
+            samples.append(sample)
+        for key,value in local_totals.items():
+            if isinstance(value,(int,float)): totals[key]=totals.get(key,0)+value
+    samples.sort(key=lambda sample:sample.completed_at)
     tz=datetime.now().astimezone().tzinfo or timezone.utc
-    output={}
-    for days in (1,14):
-        cutoff=now-timedelta(days=days)
-        selected=[sample for sample in samples if datetime.fromisoformat(sample.completed_at)>=cutoff and sample.output_tokens>=100]
-        if not selected:
-            output[str(days)]=[]
-            continue
-        buffer=io.StringIO()
-        from rich.console import Console
-        with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
-            engine.print_report(engine.build_report(selected,totals,100,tz),selected,tz,granularity='summary',console=Console(file=buffer,width=140,highlight=False))
-        output[str(days)]=parse_speed(buffer.getvalue())
+    def report(items,metadata):
+        output={}
+        for days in (1,14):
+            cutoff=now-timedelta(days=days)
+            selected=[sample for sample in items if datetime.fromisoformat(sample.completed_at)>=cutoff and sample.output_tokens>=100]
+            if not selected:
+                output[str(days)]=[]
+                continue
+            buffer=io.StringIO()
+            from rich.console import Console
+            with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+                engine.print_report(engine.build_report(selected,metadata,100,tz),selected,tz,granularity='summary',console=Console(file=buffer,width=140,highlight=False))
+            output[str(days)]=parse_speed(buffer.getvalue())
+        return output
+    output=report(samples,totals)
+    output['sources']=[{'source':source_id(home),'label':source_label(home),**report(items,metadata)}
+                       for home,items,metadata in groups]
     return output
 
 
@@ -390,6 +448,20 @@ def ratio_color(value):
 
 def remaining_percent(used):
     return max(0, min(100, 100 - float(used)))
+
+
+def window_tooltip(window):
+    minutes=window.get('windowDurationMins')
+    parts=[]
+    if isinstance(minutes,(int,float)) and minutes>0:
+        if minutes%1440==0: parts.append(f'{minutes/1440:g}-day window')
+        elif minutes%60==0: parts.append(f'{minutes/60:g}-hour window')
+        else: parts.append(f'{minutes:g}-minute window')
+    reset=window.get('resetsAt')
+    if isinstance(reset,(int,float)):
+        try: parts.append('Resets '+datetime.fromtimestamp(reset).strftime('%b %d, %H:%M'))
+        except (OSError,OverflowError,ValueError): pass
+    return '\n'.join(parts) or 'Codex usage window'
 
 
 class Tooltip:
@@ -658,6 +730,7 @@ class App:
             if isinstance(widget,tk.Canvas) and widget.find_withtag('badge_bg'):
                 widget.itemconfigure('badge_bg',fill=self.color('#f0f4f1'))
                 widget.itemconfigure('badge_text',fill=self.color('#41564b'))
+            if isinstance(widget,tk.Canvas) and hasattr(widget,'repaint'): widget.repaint()
             for child in widget.winfo_children(): recolor(child)
         recolor(self.root);self.configure_ttk();self.theme_caption(self.root)
         window=getattr(self,'settings_window',None)
@@ -729,6 +802,24 @@ class App:
         badge.create_text(width/2,height/2,text=text,font=font,fill=self.color('#41564b'),tags='badge_text')
         return badge
 
+    def allowance_bar(self,parent):
+        bar=tk.Canvas(parent,height=6,width=80,bg=self.color('#e9eaec'),bd=0,highlightthickness=0)
+        bar.remaining=None
+        def repaint(event=None):
+            bar.delete('all')
+            if bar.remaining is not None:
+                bar.create_rectangle(0,0,bar.winfo_width()*bar.remaining/100,6,
+                                     fill=self.color('#185c40'),outline='')
+        bar.repaint=repaint
+        bar.bind('<Configure>',repaint)
+        return bar
+
+    def set_allowance(self,bar,window):
+        used=window.get('usedPercent') if isinstance(window,dict) else None
+        try: bar.remaining=remaining_percent(used) if used is not None else None
+        except (TypeError,ValueError): bar.remaining=None
+        bar.repaint()
+
     def compact_height(self):
         """Fit the first speed table once at startup; refresh never resizes the app."""
         self.root.update_idletasks()
@@ -758,15 +849,28 @@ class App:
         self.content_widgets=widgets
         limits=tk.Frame(self.body,bg=self.bg);limits.pack(fill='x')
         line=tk.Frame(limits,bg=self.bg);line.pack(fill='x',pady=(0,10))
-        widgets['primary']=self.label(line,'',16,'#222426',anchor='w')
-        widgets['primary'].pack(side='left')
+        self.label(line,'Codex',11,'#222426',bold=True,anchor='w').pack(side='left',padx=(0,8))
         for symbol,command,tip in [('⚙',self.settings_dialog,'Settings'),('↻',self.refresh,'Refresh')]:
             button=tk.Button(line,text=symbol,command=command,font=('Segoe UI Symbol',15),relief='flat',bd=0,bg=self.bg,fg=self.color('#72797d'),activebackground=self.color('#f2f4f3'),activeforeground=self.color('#222426'),cursor='hand2',padx=5,takefocus=False)
             button.pack(side='right',padx=2);Tooltip(button,tip)
+        widgets['primary']=self.label(line,'',10,'#222426',anchor='e')
+        widgets['primary'].pack(side='right',padx=(8,0))
+        widgets['primary_bar']=self.allowance_bar(line);widgets['primary_bar'].pack(side='left',fill='x',expand=True)
+        widgets['primary_tip']=Tooltip(widgets['primary_bar'],'')
+        widgets['account_info']=self.label(limits,'',9,anchor='w')
+        widgets['account_info'].pack(fill='x',pady=(0,5))
+        widgets['account_tip']=Tooltip(widgets['account_info'],'')
+        widgets['account_stats']=self.label(limits,'',9,anchor='w',wraplength=400,justify='left')
+        widgets['account_stats'].pack(fill='x',pady=(0,4))
         secondary=tk.Frame(limits,bg=self.bg)
         widgets['secondary_frame']=secondary
-        widgets['secondary']=self.label(secondary,'',16,'#222426',anchor='w')
-        widgets['secondary'].pack(side='left')
+        self.label(secondary,'Other window',9,anchor='w').pack(side='left',padx=(0,8))
+        widgets['secondary']=self.label(secondary,'',10,'#222426',anchor='e')
+        widgets['secondary'].pack(side='right',padx=(8,0))
+        widgets['secondary_bar']=self.allowance_bar(secondary);widgets['secondary_bar'].pack(side='left',fill='x',expand=True)
+        widgets['secondary_tip']=Tooltip(widgets['secondary_bar'],'')
+        widgets['accounts_frame']=tk.Frame(limits,bg=self.bg)
+        widgets['accounts_frame'].pack(fill='x',pady=(0,10))
         cols=tk.Frame(self.body,bg=self.bg); cols.pack(fill='x')
         for index,(title,key,cost) in enumerate([('This month','month_tokens','month_cost'),('All time','total_tokens','total_cost')]):
             cols.columnconfigure(index,weight=1,uniform='totals')
@@ -808,10 +912,14 @@ class App:
             windows=[x for x in (limits.get('primary'),limits.get('secondary')) if x and x.get('usedPercent') is not None]
             text=lambda window:f"{remaining_percent(window['usedPercent']):g}% remaining"
             self.set_widget_options(widgets['primary'],text=text(windows[0]) if windows else 'Usage unavailable')
+            self.set_allowance(widgets['primary_bar'],windows[0] if windows else {})
+            widgets['primary_tip'].text=window_tooltip(windows[0]) if windows else 'No rate-limit window available'
             secondary=widgets['secondary_frame']
             if len(windows)>1:
                 self.set_widget_options(widgets['secondary'],text=text(windows[1]))
-                if not secondary.winfo_manager(): secondary.pack(fill='x',pady=(0,10))
+                self.set_allowance(widgets['secondary_bar'],windows[1])
+                widgets['secondary_tip'].text=window_tooltip(windows[1])
+                if not secondary.winfo_manager(): secondary.pack(fill='x',pady=(0,10),before=widgets['accounts_frame'])
             elif secondary.winfo_manager(): secondary.pack_forget()
         if source in (None,'usage'):
             usage=self.data.get('usage',{})
@@ -826,6 +934,71 @@ class App:
             self.set_widget_options(widgets['delta'],text=f'{delta:+,} tokens' if delta is not None else '—')
         if source in (None,'speed'):
             for days in ('1','14'): self.update_speed(days,self.data.get('speed',{}).get(days,[]))
+        if source in (None,'limits','usage','speed'): self.update_accounts()
+
+    def update_accounts(self):
+        widgets=self.content_widgets
+        accounts=self.data.get('limits',{}).get('accounts',[])
+        chats=[account for account in accounts if account.get('kind')=='chatgpt']
+        others=[account for account in accounts if account.get('kind')!='chatgpt']
+        usage={item['source']:item for item in self.data.get('usage',{}).get('sources',[]) if 'source' in item}
+        speed={item['source']:item for item in self.data.get('speed',{}).get('sources',[]) if 'source' in item}
+        def details(account):
+            parts=[]
+            if account.get('email'): parts.append(account['email'])
+            if account.get('plan'): parts.append(str(account['plan']))
+            if account.get('label'): parts.append(account['label'])
+            if account.get('error'): parts.append(account['error'])
+            return ' · '.join(parts)
+        def stats(account):
+            parts=[]
+            local=usage.get(account.get('source'))
+            if local: parts.append(f"{local['month_tokens']:,} local tokens/mo")
+            rows=speed.get(account.get('source'),{}).get('1',[])
+            if rows:
+                parts.append('1d '+f"{rows[0]['model']} {rows[0]['normal']}/{rows[0]['fast']}"+' t/s')
+            return ' · '.join(parts)
+        def speed_tip(account):
+            rows=speed.get(account.get('source'),{}).get('1',[])
+            text=['Local 1-day speed by model (effective tokens/s)']
+            text.extend(f"{row['model']}: normal {row['normal']}, fast {row['fast']}" for row in rows)
+            return '\n'.join(text) if rows else 'No local 1-day speed samples'
+        first=chats[0] if chats else None
+        self.set_widget_options(widgets['account_info'],text=('ChatGPT · '+details(first)) if first else '')
+        self.set_widget_options(widgets['account_stats'],text=stats(first) if first else '')
+        widgets['account_tip'].text=(details(first)+'\n\n'+speed_tip(first)) if first else 'No ChatGPT account detected'
+        frame=widgets['accounts_frame']
+        for child in frame.winfo_children(): child.destroy()
+        for account in chats[1:]+others:
+            row=tk.Frame(frame,bg=self.bg);row.pack(fill='x',pady=(0,5))
+            if account.get('kind')=='chatgpt':
+                heading='ChatGPT · '+details(account)
+                window=(account.get('limits') or {}).get('primary') or {}
+                used=window.get('usedPercent')
+                value=f"{remaining_percent(used):g}% remaining" if used is not None else 'Usage unavailable'
+            elif account.get('kind')=='apiKey':
+                heading='API key · '+details(account)
+                value='Balance unavailable'
+            else:
+                heading=str(account.get('kind') or 'Account')+' · '+details(account)
+                value='Usage unavailable'
+            self.label(row,value,9,anchor='e').pack(side='right',padx=(6,0))
+            title=self.label(row,heading,9,'#292d30',anchor='w')
+            title.pack(side='left',fill='x',expand=True)
+            Tooltip(title,details(account)+'\n\n'+speed_tip(account))
+            summary=stats(account)
+            if summary:
+                self.label(frame,summary,9,anchor='w',wraplength=400,justify='left').pack(fill='x',pady=(0,5))
+            if account.get('kind')=='chatgpt':
+                bar=self.allowance_bar(frame);bar.pack(fill='x',pady=(0,5));self.set_allowance(bar,window)
+                Tooltip(bar,window_tooltip(window))
+                secondary=(account.get('limits') or {}).get('secondary') or {}
+                if secondary.get('usedPercent') is not None:
+                    extra=tk.Frame(frame,bg=self.bg);extra.pack(fill='x',pady=(0,5))
+                    self.label(extra,'Other window',9,anchor='w').pack(side='left',padx=(0,8))
+                    self.label(extra,f"{remaining_percent(secondary['usedPercent']):g}% remaining",9,anchor='e').pack(side='right')
+                    bar=self.allowance_bar(extra);bar.pack(side='left',fill='x',expand=True,padx=(0,8))
+                    self.set_allowance(bar,secondary);Tooltip(bar,window_tooltip(secondary))
 
     def update_speed(self,days,rows):
         widgets=self.content_widgets;grid=widgets['grids'][days];existing=widgets['speed'][days]
@@ -1004,6 +1177,8 @@ class App:
             if error: self.refresh_errors.append(name+': '+error)
             else:
                 if name=='speed': value,note=value; self.refresh_notes.extend([note] if note else [])
+                if name=='limits' and value.get('errors'):
+                    self.refresh_errors.append('limits: Account or limits unavailable for '+', '.join(value['errors']))
                 if name=='usage':
                     apply_usage_result(self.data,value,self.usage_baseline,time.time())
                 self.data[name]=value

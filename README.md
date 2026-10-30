@@ -24,7 +24,7 @@ Windows [registry change notifications](https://learn.microsoft.com/en-us/window
 3. Open **Codex Meter** on your desktop. The installer also adds it to the Start menu.
 
 
-**Requires Windows 10/11 x64, Node.js 22+ with npm, and Codex installed and signed in.** Restart the app after installing Node.js so it can find `npx`. Codex Desktop's bundled CLI is detected when it is not on PATH. This app uses your local Codex logs; it cannot recover activity from other computers or deleted logs.
+**Requires Windows 10/11 x64, Node.js 22+ with npm, and Codex installed.** Sign in with ChatGPT or an API key to show the available account information. Restart the app after installing Node.js so it can find `npx`. Codex Desktop's bundled CLI is detected when it is not on PATH. This app uses your local Codex logs; it cannot recover activity from other computers or deleted logs.
 
 Python and the speed tool's libraries are included in the release. codex-speed is downloaded automatically on its first scan. First use needs internet access. Keep the entire extracted folder if running the app directly from `CodexMeter/CodexMeter.exe`; after installing, the extracted ZIP folder can be removed.
 
@@ -36,6 +36,7 @@ Python and the speed tool's libraries are included in the release. codex-speed i
 - Only one app window runs at a time. Opening another copy restores the existing window, including one hidden in the tray.
 - Closing the window hides it in the notification area. Use **Open**, **Refresh** or **Quit** from the tray menu.
 - Hover over speed values for units and sample counts. Hover over the green token change for “Since Last Refresh” and the previous/current raw totals. Each successful usage response becomes the next baseline immediately, even while speed or account queries are pending. Manual and automatic refresh use the same baseline. A previous +150,000,000 followed by only 200,000 new tokens displays +200,000; the old increase is never added again.
+- The Codex bars show remaining ChatGPT allowance; hover over a bar for its time window and reset time when available. Account rows identify the local Codex home, current login, local monthly tokens and 1-day speed when available. Hover over an account for its 1-day speed breakdown. The totals and speed tables combine discovered local homes.
 - The 1-day speed table appears above the 14-day table. Settings ends with version and project details, without a provider list. There is no visible scrollbar on the main window.
 - The app does not start with Windows. Scheduled scans run while it is open or in the tray. Opening recent results shows the saved values immediately. Upgrading alone does not trigger a scan; scheduled refresh runs only when due.
 
@@ -65,13 +66,23 @@ If a replacement or the restarted app fails, the installer attempts to restore t
 
 | Display | Source |
 | --- | --- |
-| Remaining allowance | `100 − usedPercent` from local Codex `account/rateLimits/read` |
-| This month / all time tokens and USD | `npx --yes ccusage@latest codex monthly --json` |
-| Normal / Fast speed | [codex-speed by pszemraj](https://gist.github.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635), Selected history, rolling 1-day and 14-day windows |
+| Remaining allowance | `100 − usedPercent` from each ChatGPT login's Codex `account/rateLimits/read` |
+| This month / all time tokens and USD | `npx --yes ccusage@latest codex monthly --json` for each discovered home |
+| Normal / Fast speed | [codex-speed by pszemraj](https://gist.github.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635), combined local history, rolling 1-day and 14-day windows |
 | Ratio | Fast median effective tokens/s ÷ Normal median effective tokens/s |
 | Green token change | Difference in raw all-time tokens between the latest two successful usage scans |
 
 Costs are estimated API-equivalent costs from [ccusage](https://github.com/ccusage/ccusage), not your subscription invoice. They may use fallback model prices. Speed values are client-side estimates from local timestamps, including waiting, using samples with at least 100 output tokens. Different workloads, reasoning settings, context sizes and sample counts can change the comparison. Recorded Fast settings do not confirm server routing. A dot means no result. Ratios below 1 are dark red; 1 to below 1.5 are dark yellow; 1.5 and above are dark green.
+
+### Accounts and local homes
+
+The app looks for `~/.codex`, other `~/.codex*` directories containing Codex config, credentials or sessions, and the current or Windows-saved `CODEX_HOME`. To add homes elsewhere, set the Windows user environment variable `CODEX_METER_EXTRA_HOMES` to their full paths separated by semicolons, then restart Codex Meter and refresh. Each discovered home is queried with its own Codex authentication. The current and Windows-saved `OPENAI_API_KEY` and `CODEX_API_KEY` environment variables are also reported as API key sources. The same key can appear in both a home and an environment variable; these rows are sources, not proof of separate billing accounts.
+
+ChatGPT allowance is account-wide, while token totals and speed are calculated from the local logs in each home. Logs in one home can include activity from earlier logins, so the figures cannot always be attributed to its current account. The combined speed deduplicates response IDs across homes. Token totals add each home's ccusage result, so copies of the same sessions in different homes may be counted twice. Adding or removing a home resets the “since last refresh” comparison.
+
+An API key row shows **Balance unavailable**. Regular project keys do not supply a reliable remaining-credit balance through the Codex account endpoint. [OpenAI's organization costs API](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs) reports costs with an administrator key; it does not establish an individual key's remaining balance. No API key is sent to a balance endpoint.
+
+Only discoverable local homes and the app's own or Windows-saved environment are included. A key or `CODEX_HOME` set only inside a different running terminal, a private application, a remote computer or an undisclosed custom location cannot be discovered automatically. OS credential-store logins are queried through Codex where available. No credential values or key fingerprints are written to the snapshot; account labels, email/plan when returned by Codex, local home paths and calculated results are saved there.
 
 **Reserve adjustment:** this manual correction covers a token gap when local logs capture only part of your `gpt-reserve` usage. The default `600,000,000` tokens is a personal estimate, not an audited total. Some reserve tokens are already counted, so an estimate can overlap with recorded usage.
 

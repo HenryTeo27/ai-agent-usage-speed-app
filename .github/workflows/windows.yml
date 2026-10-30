@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt pyinstaller
-      - run: python -m unittest -v test_meter
+      - run: python -m unittest -v
       - shell: pwsh
         run: ./scripts/build.ps1 -Python (Get-Command python).Source
       - shell: pwsh

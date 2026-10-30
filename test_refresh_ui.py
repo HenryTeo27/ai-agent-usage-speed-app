@@ -150,5 +150,34 @@ class HiddenRefreshTests(unittest.TestCase):
         self.assertEqual(ratio.cget('fg'),'#185c40')
         self.assertEqual(app.root.state(),'withdrawn')
 
+    def test_account_rows_show_local_usage_and_speed_and_replace_stale_accounts(self):
+        app=self.app;widgets=app.content_widgets
+        chat={'kind':'chatgpt','email':'person@example.test','label':'.codex','source':'chat',
+              'limits':{'primary':{'usedPercent':25}}}
+        api={'kind':'apiKey','label':'.codex-api','source':'api'}
+        local_speed={'model':'gpt-test','normal':'10','fast':'20','ratio':'2×','normal_n':'1','fast_n':'1'}
+        app.data['limits']={'primary':chat['limits']['primary'],'accounts':[chat,api]}
+        app.data['usage']['sources']=[{'source':'chat','month_tokens':120},{'source':'api','month_tokens':40}]
+        app.data['speed']['sources']=[{'source':'api','1':[local_speed]}]
+        app.update_content()
+        self.assertEqual(widgets['primary'].cget('text'),'75% remaining')
+        self.assertEqual(widgets['primary_bar'].remaining,75)
+        self.assertIn('person@example.test',widgets['account_info'].cget('text'))
+        def labels(widget):
+            result=[]
+            for child in widget.winfo_children():
+                if isinstance(child,meter.tk.Label): result.append(child.cget('text'))
+                result.extend(labels(child))
+            return result
+        visible=labels(widgets['accounts_frame'])
+        self.assertTrue(any('API key · .codex-api' in text for text in visible))
+        self.assertIn('Balance unavailable',visible)
+        self.assertTrue(any('40 local tokens' in text and 'gpt-test 10/20' in text for text in visible))
+        app.data['limits']={'accounts':[]}
+        app.update_content('limits')
+        self.assertEqual(widgets['primary'].cget('text'),'Usage unavailable')
+        self.assertIsNone(widgets['primary_bar'].remaining)
+        self.assertFalse(labels(widgets['accounts_frame']))
+
 
 if __name__=='__main__': unittest.main()

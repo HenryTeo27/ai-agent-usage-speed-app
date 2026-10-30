@@ -253,20 +253,29 @@ class ParserTests(unittest.TestCase):
     def test_missing_table(self):
         with self.assertRaises(ValueError): meter.parse_speed('unexpected output')
     def test_month_and_totals(self):
-        import json
+        import json, tempfile
+        from pathlib import Path
         from datetime import datetime
         month=datetime.now().strftime('%Y-%m')
         data={'monthly':[{'month':month,'totalTokens':100,'costUSD':2}], 'totals':{'totalTokens':250,'costUSD':3}}
-        with patch.object(meter.shutil,'which',return_value='npx'), patch.object(meter,'run',return_value=json.dumps(data)):
-            result=meter.get_usage()
+        with tempfile.TemporaryDirectory() as tmp:
+            home=Path(tmp);(home/'sessions').mkdir()
+            with patch.object(meter,'codex_homes',return_value=[home]), patch.object(meter.shutil,'which',return_value='npx'), patch.object(meter,'run',return_value=json.dumps(data)):
+                result=meter.get_usage()
         self.assertEqual(result['month_tokens'],100)
         self.assertEqual(result['total_tokens'],250)
     def test_absent_month(self):
-        with patch.object(meter.shutil,'which',return_value='npx'), patch.object(meter,'run',return_value='{"monthly":[],"totals":{"totalTokens":1,"costUSD":1}}'):
-            self.assertEqual(meter.get_usage()['month_tokens'],0)
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            home=Path(tmp);(home/'sessions').mkdir()
+            with patch.object(meter,'codex_homes',return_value=[home]), patch.object(meter.shutil,'which',return_value='npx'), patch.object(meter,'run',return_value='{"monthly":[],"totals":{"totalTokens":1,"costUSD":1}}'):
+                self.assertEqual(meter.get_usage()['month_tokens'],0)
 
 class SpeedBatchTests(unittest.TestCase):
     def test_older_three_argument_engine_and_both_windows(self):
+        import tempfile
+        from pathlib import Path
         from types import SimpleNamespace
         from datetime import datetime, timedelta, timezone
         from unittest.mock import MagicMock
@@ -284,9 +293,11 @@ class SpeedBatchTests(unittest.TestCase):
             print('Selected history\nModel Normal eff Fast eff Ratio Normal n Fast n\ngpt-test 10.0 20.0 2.00× 30 40\n')
         engine.load_samples=load;engine.build_report=lambda selected,*args:{};engine.print_report=report
         spec=MagicMock()
-        with patch.object(meter.importlib.util,'spec_from_file_location',return_value=spec), patch.object(meter.importlib.util,'module_from_spec',return_value=engine):
-            result=meter.speed_batch('test-engine.py')
-        self.assertEqual(calls,[1,2])
+        with tempfile.TemporaryDirectory() as tmp:
+            home=Path(tmp);(home/'sessions').mkdir()
+            with patch.object(meter,'codex_homes',return_value=[home]), patch.object(meter.importlib.util,'spec_from_file_location',return_value=spec), patch.object(meter.importlib.util,'module_from_spec',return_value=engine):
+                result=meter.speed_batch('test-engine.py')
+        self.assertEqual(calls,[1,2,1,2])
         self.assertEqual(result['1'][0]['ratio'],'2.00×')
         self.assertEqual(result['14'][0]['normal'],'10.0')
         meter.sys.modules.pop('_codex_meter_speed',None)
