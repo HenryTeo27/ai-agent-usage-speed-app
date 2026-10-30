@@ -67,7 +67,7 @@ class HiddenRefreshTests(unittest.TestCase):
         started={name:threading.Event() for name in values}
         release={name:threading.Event() for name in values}
         def source(name):
-            def run():
+            def run(*args):
                 started[name].set()
                 if not release[name].wait(10): raise RuntimeError('Test source timed out')
                 return values[name]
@@ -150,34 +150,73 @@ class HiddenRefreshTests(unittest.TestCase):
         self.assertEqual(ratio.cget('fg'),'#185c40')
         self.assertEqual(app.root.state(),'withdrawn')
 
-    def test_account_rows_show_local_usage_and_speed_and_replace_stale_accounts(self):
+    def test_original_layout_with_combined_totals_account_deltas_and_speed_rows(self):
         app=self.app;widgets=app.content_widgets
-        chat={'kind':'chatgpt','email':'person@example.test','label':'.codex','source':'chat',
-              'limits':{'primary':{'usedPercent':25}}}
-        api={'kind':'apiKey','label':'.codex-api','source':'api'}
-        local_speed={'model':'gpt-test','normal':'10','fast':'20','ratio':'2×','normal_n':'1','fast_n':'1'}
-        app.data['limits']={'primary':chat['limits']['primary'],'accounts':[chat,api]}
-        app.data['usage']['sources']=[{'source':'chat','month_tokens':120},{'source':'api','month_tokens':40}]
-        app.data['speed']['sources']=[{'source':'api','1':[local_speed]}]
+        app.settings['reserve']=0
+        chat={'source':'chat','short':'GPT','month_tokens':120,'total_tokens':500,'month_cost':1,'total_cost':3}
+        api={'source':'api','short':'API','month_tokens':40,'total_tokens':100,'month_cost':2,'total_cost':4}
+        app.data['limits']={'primary':{'usedPercent':25},'accounts':[
+            {'source':'chat','kind':'chatgpt','limits':{'primary':{'usedPercent':25}}},
+            {'source':'api','kind':'apiKey'}]}
+        app.data['usage']=meter.combined_usage([chat,api],'2026-10')
+        app.data['delta_sources']=[{'source':'chat','short':'GPT','delta':50},{'source':'api','short':'API','delta':20}]
+        app.data['speed']={'sources':[{'source':'chat','short':'GPT','1':[self.old_row],'14':[]},
+                                      {'source':'api','short':'API','1':[self.old_row],'14':[self.old_row]}]}
         app.update_content()
         self.assertEqual(widgets['primary'].cget('text'),'75% remaining')
-        self.assertEqual(widgets['primary_bar'].remaining,75)
-        self.assertIn('person@example.test',widgets['account_info'].cget('text'))
-        def labels(widget):
-            result=[]
-            for child in widget.winfo_children():
-                if isinstance(child,meter.tk.Label): result.append(child.cget('text'))
-                result.extend(labels(child))
-            return result
-        visible=labels(widgets['accounts_frame'])
-        self.assertTrue(any('API key · .codex-api' in text for text in visible))
-        self.assertIn('Balance unavailable',visible)
-        self.assertTrue(any('40 local tokens' in text and 'gpt-test 10/20' in text for text in visible))
-        app.data['limits']={'accounts':[]}
-        app.update_content('limits')
-        self.assertEqual(widgets['primary'].cget('text'),'Usage unavailable')
-        self.assertIsNone(widgets['primary_bar'].remaining)
-        self.assertFalse(labels(widgets['accounts_frame']))
+        self.assertIn('16',widgets['primary'].cget('font'))
+        self.assertNotIn('primary_bar',widgets)
+        self.assertNotIn('accounts_frame',widgets)
+        self.assertEqual(widgets['usage']['month_tokens'].cget('text'),'160')
+        self.assertEqual(widgets['usage']['total_tokens'].cget('text'),'600')
+        self.assertEqual(widgets['delta'].cget('text'),'GPT +50 tokens\nAPI +20 tokens')
+        self.assertEqual([row['labels'][0].cget('text') for row in widgets['speed']['1'].values()],
+                         ['GPT gpt-test','API gpt-test'])
+
+    def test_one_usage_failure_keeps_that_account_and_updates_the_other(self):
+        app=self.app
+        old_gpt={'source':'gpt','short':'GPT','month_tokens':50,'total_tokens':100}
+        old_api={'source':'api','short':'API','month_tokens':50,'total_tokens':100}
+        app.data['usage']=meter.combined_usage([old_gpt,old_api],'2026-10')
+        fresh=meter.combined_usage([{**old_gpt,'total_tokens':120}],'2026-10')
+        fresh['failed_sources']=[{'source':'api','short':'API'}]
+        with patch.object(meter,'get_usage',return_value=fresh),patch.object(meter,'get_limits',return_value={}),patch.object(meter,'get_speed',return_value=({'1':[],'14':[]},'')):
+            app.refresh();self.pump_until(lambda:not app.busy)
+        self.assertEqual(app.data['usage']['total_tokens'],220)
+        self.assertEqual(meter.delta_text(app.data,{}),'GPT +20 tokens\nAPI —')
+        self.assertIn('Partial refresh',app.data['status'])
+        self.assertIn('API unavailable',app.data['details'])
+
+    def test_settings_toggle_saves_immediately_and_filters_all_displays(self):
+        app=self.app
+        homes=[Path(self.folder.name)/'.codex',Path(self.folder.name)/'.codex-api']
+        for home,mode in zip(homes,('chatgpt','apikey')):
+            home.mkdir();(home/'auth.json').write_text('{"auth_mode":"'+mode+'"}')
+        chat,api=map(str,homes)
+        app.settings['reserve']=0
+        app.data['usage']=meter.combined_usage([
+            {'source':chat,'short':'GPT','month_tokens':120,'total_tokens':500},
+            {'source':api,'short':'API','month_tokens':40,'total_tokens':100}],'2026-10')
+        app.data['delta_sources']=[{'source':chat,'short':'GPT','delta':50},{'source':api,'short':'API','delta':20}]
+        app.data['limits']={'accounts':[{'source':chat,'kind':'chatgpt','limits':{'primary':{'usedPercent':25}}}]}
+        app.data['speed']={'sources':[{'source':chat,'short':'GPT','1':[self.old_row],'14':[]},
+                                      {'source':api,'short':'API','1':[self.old_row],'14':[]}]}
+        with patch.object(meter,'codex_homes',return_value=homes),patch.object(meter.tk.Toplevel,'deiconify'),patch.object(meter.tk.Toplevel,'grab_set'),patch.object(app.root,'state',return_value='normal'):
+            app.settings_dialog()
+            app.settings_vars['accounts'][api].set(False)
+            self.assertEqual(meter.load_settings()['disabled_sources'],[api])
+            self.assertEqual(meter.enabled_homes(homes,app.settings),[homes[0]])
+            self.assertEqual(app.content_widgets['usage']['month_tokens'].cget('text'),'120')
+            self.assertEqual(app.content_widgets['delta'].cget('text'),'GPT +50 tokens')
+            self.assertEqual(list(app.content_widgets['speed']['1']),[('GPT gpt-test',0)])
+            app.settings_vars['accounts'][chat].set(False)
+            self.assertEqual(app.content_widgets['usage']['total_tokens'].cget('text'),'0')
+            self.assertEqual(app.content_widgets['speed']['1'],{})
+            self.assertEqual(app.content_widgets['primary'].cget('text'),'Usage unavailable')
+            app.settings_vars['accounts'][api].set(True)
+            self.assertEqual(app.content_widgets['usage']['month_tokens'].cget('text'),'40')
+            self.assertTrue(app.close_settings())
+        self.assertEqual(meter.load_settings()['disabled_sources'],[chat])
 
 
 if __name__=='__main__': unittest.main()

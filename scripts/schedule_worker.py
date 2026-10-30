@@ -22,7 +22,7 @@ meter.save(meter.CONFIG,{'interval':4,'reserve':0,'appearance':'system'})
 meter.save(meter.SNAPSHOT,{'usage':old,'limits':{},'speed':{'1':[],'14':[]},'last_refresh_at':time.time()-3*3600})
 barrier=threading.Barrier(3)
 def source(value):
-    def run():
+    def run(*args):
         barrier.wait(timeout=4)
         return value
     return run

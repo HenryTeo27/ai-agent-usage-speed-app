@@ -1,5 +1,4 @@
 """Discover Codex homes and environment credentials without persisting secrets."""
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -75,19 +74,12 @@ def read_auth_mode(home):
     return None
 
 
-def configured_api_keys():
-    # Fingerprints are used only in memory to deduplicate environment variables.
-    seen, items = {}, []
-    for name in ('CODEX_API_KEY', 'OPENAI_API_KEY'):
-        for value in [os.environ.get(name, ''), *persisted_environment(name)]:
-            if not value:
-                continue
-            fingerprint = hashlib.sha256(value.encode('utf-8')).digest()
-            if fingerprint in seen:
-                if name not in seen[fingerprint]['sources']:
-                    seen[fingerprint]['sources'].append(name)
-                continue
-            item = {'kind': 'apiKey', 'sources': [name], 'label': name}
-            seen[fingerprint] = item
-            items.append(item)
-    return items
+def account_names(homes):
+    """Short, deterministic names shared by Settings, deltas and speed rows."""
+    names, counts = {}, {}
+    for home in homes:
+        mode = read_auth_mode(home)
+        base = {'chatgpt': 'GPT', 'apiKey': 'API'}.get(mode, 'Codex')
+        counts[base] = counts.get(base, 0) + 1
+        names[source_id(home)] = base + (str(counts[base]) if counts[base] > 1 else '')
+    return names

@@ -9,7 +9,7 @@ import sys, os, json, subprocess, threading, tempfile, re, time, shutil, math
 from pathlib import Path
 from datetime import datetime
 import app_updater
-from sources import codex_homes, source_id, source_label, read_auth_mode, configured_api_keys
+from sources import codex_homes, source_id, source_label, read_auth_mode, account_names
 from system_theme import system_dark, ThemeWatcher
 ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 sys.path.insert(0, str(ROOT / 'vendor'))
@@ -41,7 +41,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.1.0'
+VERSION = '1.1.1'
 REPOSITORY = 'https://github.com/HenryTeo27/ai-agent-usage-speed-app'
 CONTENT_PAD = 28
 SETTINGS_WRAP = 450
@@ -151,7 +151,15 @@ def save(path,data):
 
 def load_snapshot():
     data=read(SNAPSHOT,{})
-    return data if isinstance(data,dict) else {}
+    if not isinstance(data,dict): return {}
+    names=account_names(codex_homes())
+    for key in ('usage','speed'):
+        for item in data.get(key,{}).get('sources',[]):
+            item.setdefault('short',names.get(item.get('source'),'Codex'))
+    if 'sources' in data.get('usage',{}) and 'delta_sources' not in data:
+        data['delta_sources']=[{'source':item['source'],'short':item['short'],'delta':None}
+                               for item in data['usage']['sources']]
+    return data
 
 
 def load_settings():
@@ -162,7 +170,62 @@ def load_settings():
         settings['interval']=saved['interval']
     if type(saved.get('reserve')) is int and saved['reserve']>=0: settings['reserve']=saved['reserve']
     if saved.get('appearance') in ('system','light','dark'): settings['appearance']=saved['appearance']
+    disabled=saved.get('disabled_sources')
+    if isinstance(disabled,list):
+        disabled=list(dict.fromkeys(value for value in disabled if isinstance(value,str) and value))
+        if disabled: settings['disabled_sources']=disabled
     return settings
+
+
+def enabled_source(source,settings):
+    disabled={os.path.normcase(value) for value in settings.get('disabled_sources',[])}
+    return os.path.normcase(source) not in disabled
+
+
+def enabled_homes(homes=None,settings=None):
+    homes=codex_homes() if homes is None else homes
+    settings=load_settings() if settings is None else settings
+    return [home for home in homes if enabled_source(source_id(home),settings)]
+
+
+def short_names(homes):
+    all_homes=list(dict.fromkeys([*codex_homes(),*homes]))
+    return account_names(all_homes)
+
+
+def combined_usage(sources,month):
+    return {'month':month,**{key:sum(item.get(key,0) for item in sources)
+            for key in ('month_tokens','month_cost','total_tokens','total_cost')},'sources':sources}
+
+
+def displayed_usage(data,settings):
+    usage=data.get('usage',{})
+    if 'sources' not in usage: return usage
+    return combined_usage([item for item in usage['sources'] if enabled_source(item['source'],settings)],usage.get('month'))
+
+
+def displayed_limits(data,settings):
+    limits=data.get('limits',{})
+    if 'accounts' not in limits: return limits
+    return next((item.get('limits',{}) for item in limits['accounts']
+                 if item.get('kind')=='chatgpt' and enabled_source(item.get('source',''),settings)),{})
+
+
+def displayed_speed(data,days,settings):
+    speed=data.get('speed',{})
+    if 'sources' not in speed: return speed.get(days,[])
+    return [{**row,'model':item.get('short','Codex')+' '+row['model']}
+            for item in speed['sources'] if enabled_source(item['source'],settings)
+            for row in item.get(days,[])]
+
+
+def delta_text(data,settings):
+    if 'delta_sources' not in data:
+        delta=data.get('delta')
+        return f'{delta:+,} tokens' if delta is not None else '—'
+    return '\n'.join(item.get('short','Codex')+' '+
+                     (f"{item['delta']:+,} tokens" if item.get('delta') is not None else '—')
+                     for item in data['delta_sources'] if enabled_source(item['source'],settings)) or '—'
 
 
 def last_refresh_time(data, snapshot=None):
@@ -184,6 +247,16 @@ def last_refresh_time(data, snapshot=None):
 
 def apply_usage_result(data,value,previous,observed_at):
     """One adjacent pair only; the reserve adjustment never enters this calculation."""
+    prior={item['source']:item for item in (previous or {}).get('sources',[])}
+    if 'sources' in value:
+        data['delta_sources']=[]
+        for item in value['sources']:
+            before=prior.get(item['source'],{}).get('total_tokens')
+            after=item.get('total_tokens')
+            delta=after-before if before is not None and after is not None and not item.get('stale') else None
+            data['delta_sources'].append({'source':item['source'],'short':item.get('short','Codex'),
+                                         'delta':delta,'previous_tokens':before,'current_tokens':after})
+    else: data.pop('delta_sources',None)
     if previous is not None and ('sources' in value or 'sources' in previous):
         old={item['source'] for item in previous.get('sources',[]) if 'source' in item}
         new={item['source'] for item in value.get('sources',[]) if 'source' in item}
@@ -198,7 +271,16 @@ def apply_usage_result(data,value,previous,observed_at):
     data.setdefault('updated_at',{})['usage']=observed_at
 
 
-def delta_tooltip(data):
+def delta_tooltip(data,settings=None):
+    if 'delta_sources' in data:
+        lines=['Since Last Refresh']
+        for item in data['delta_sources']:
+            if settings is not None and not enabled_source(item['source'],settings): continue
+            before=item.get('previous_tokens');after=item.get('current_tokens')
+            lines.append(item.get('short','Codex')+': '+
+                         (f"{before:,} → {after:,} ({item['delta']:+,})" if item.get('delta') is not None
+                          else 'Available after the next successful refresh'))
+        return '\n'.join(lines)
     pair=data.get('delta_comparison',{})
     before=pair.get('previous_tokens');after=pair.get('current_tokens')
     if before is None or after is None: return 'Since Last Refresh'
@@ -266,43 +348,51 @@ def worker_call(mode, args, output, timeout, env=None):
     return result['value']
 
 
-def get_limits():
+def get_limits(homes=None):
+    homes=enabled_homes() if homes is None else homes
+    names=short_names(homes)
     def query(home):
         env=os.environ.copy();env['CODEX_HOME']=str(home)
         env.pop('OPENAI_API_KEY',None);env.pop('CODEX_API_KEY',None)
-        try:
-            with tempfile.TemporaryDirectory(prefix='codex-meter-limits-') as tmp:
-                account=worker_call('--limits',[],Path(tmp)/'result.json',35,env=env)
-        except Exception:
-            account={'kind':read_auth_mode(home),'error':'Account or limits unavailable'}
+        if read_auth_mode(home)=='apiKey': account={'kind':'apiKey'}
+        else:
+            try:
+                with tempfile.TemporaryDirectory(prefix='codex-meter-limits-') as tmp:
+                    account=worker_call('--limits',[],Path(tmp)/'result.json',35,env=env)
+            except Exception:
+                account={'kind':read_auth_mode(home),'error':'Account or limits unavailable'}
         if not account.get('kind'):
             return None,source_label(home) if account.get('error') else None
-        account['source']=source_id(home);account['label']=source_label(home)
+        account['source']=source_id(home);account['label']=source_label(home);account['short']=names[source_id(home)]
         return account,source_label(home) if account.get('error') else None
     with ThreadPoolExecutor(max_workers=4) as pool:
-        results=list(pool.map(query,codex_homes()))
+        results=list(pool.map(query,homes))
     accounts=[item for item,error in results if item]
     errors=[label for item,label in results if label]
-    accounts.extend(configured_api_keys())
     first=next((item.get('limits',{}) for item in accounts if item.get('kind')=='chatgpt'),{})
     return {**first,'accounts':accounts,'errors':errors}
 
-def get_usage():
+def get_usage(homes=None):
     npx = shutil.which('npx.cmd') or shutil.which('npx')
     if not npx: raise RuntimeError('Node.js / npx not found')
     month = datetime.now().strftime('%Y-%m')
-    sources=[]
-    for home in codex_homes():
-        if not any((home/name).is_dir() for name in ('sessions','archived_sessions')): continue
+    homes=enabled_homes() if homes is None else homes
+    names=short_names(homes)
+    homes=[home for home in homes if any((home/name).is_dir() for name in ('sessions','archived_sessions'))]
+    def query(home):
         env=os.environ.copy();env['CODEX_HOME']=str(home)
         env.pop('OPENAI_API_KEY',None);env.pop('CODEX_API_KEY',None)
-        data=json.loads(run([npx, '--yes', 'ccusage@latest', 'codex', 'monthly', '--json'],timeout=180,env=env))
+        identity={'source':source_id(home),'label':source_label(home),'short':names[source_id(home)]}
+        try: data=json.loads(run([npx, '--yes', 'ccusage@latest', 'codex', 'monthly', '--json'],timeout=180,env=env))
+        except Exception: return None,identity
         rows=data['monthly'];total=data['totals']
         current=next((x for x in rows if x['month']==month),{'totalTokens':0,'costUSD':0})
-        sources.append({'source':source_id(home),'label':source_label(home),
-                        'month_tokens':current['totalTokens'],'month_cost':current['costUSD'],
-                        'total_tokens':total['totalTokens'],'total_cost':total['costUSD']})
-    return {'month':month,**{key:sum(item[key] for item in sources) for key in ('month_tokens','month_cost','total_tokens','total_cost')},'sources':sources}
+        return {**identity,'month_tokens':current['totalTokens'],'month_cost':current['costUSD'],
+                'total_tokens':total['totalTokens'],'total_cost':total['costUSD'],'observed_at':time.time()},None
+    with ThreadPoolExecutor(max_workers=3) as pool: results=list(pool.map(query,homes))
+    result=combined_usage([item for item,error in results if item],month)
+    result['failed_sources']=[error for item,error in results if error]
+    return result
 
 def parse_speed(raw):
     lines=raw.splitlines()
@@ -319,10 +409,12 @@ def parse_speed(raw):
         result.append({'model':parts[0], 'normal':parts[1], 'fast':parts[2], 'ratio':parts[3], 'normal_n':parts[4], 'fast_n':parts[5]})
     return result
 
-def get_speed():
+def get_speed(homes=None):
+    homes=enabled_homes() if homes is None else homes
+    if not homes: return {'1':[],'14':[],'sources':[]},''
     with tempfile.TemporaryDirectory(prefix='codex-meter-speed-') as tmp:
         env=os.environ.copy();env.pop('OPENAI_API_KEY',None);env.pop('CODEX_API_KEY',None)
-        value=worker_call('--speed-all',[],Path(tmp)/'result.json',145,env=env)
+        value=worker_call('--speed-all',[json.dumps([str(home) for home in homes])],Path(tmp)/'result.json',145,env=env)
         return value[0],value[1]
 
 
@@ -348,7 +440,7 @@ def app_update_worker():
     return {'candidate':candidate,'stage':str(stage) if stage else None}
 
 
-def scan_speed():
+def scan_speed(homes=None):
     import urllib.request, ast
     note=''
     with tempfile.TemporaryDirectory(prefix='codex-meter-') as tmp:
@@ -372,7 +464,7 @@ def scan_speed():
             if not candidate.exists(): raise RuntimeError('First speed scan needs internet to download codex-speed')
             note='Speed update unavailable; using last available copy'
         def scan(script):
-            return speed_batch(script)
+            return speed_batch(script,homes)
         try: output=scan(candidate)
         except Exception:
             fallback=CACHED_SPEED if CACHED_SPEED.exists() else SPEED
@@ -385,7 +477,7 @@ def scan_speed():
                     shutil.copyfile(candidate,CACHED_SPEED)
         return output,note
 
-def speed_batch(script):
+def speed_batch(script,homes=None):
     spec=importlib.util.spec_from_file_location('_codex_meter_speed',script)
     engine=importlib.util.module_from_spec(spec)
     sys.modules[spec.name]=engine
@@ -403,8 +495,10 @@ def speed_batch(script):
             except OSError: result.append(path)
         return result
     engine.find_rollouts=recent_rollouts
+    homes=enabled_homes() if homes is None else homes
+    names=short_names(homes)
     groups=[];samples=[];seen=set();totals={}
-    for home in codex_homes():
+    for home in homes:
         if not any((home/name).is_dir() for name in ('sessions','archived_sessions')): continue
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             local,local_totals=engine.load_samples(home,None,1)
@@ -434,7 +528,7 @@ def speed_batch(script):
             output[str(days)]=parse_speed(buffer.getvalue())
         return output
     output=report(samples,totals)
-    output['sources']=[{'source':source_id(home),'label':source_label(home),**report(items,metadata)}
+    output['sources']=[{'source':source_id(home),'label':source_label(home),'short':names[source_id(home)],**report(items,metadata)}
                        for home,items,metadata in groups]
     return output
 
@@ -448,20 +542,6 @@ def ratio_color(value):
 
 def remaining_percent(used):
     return max(0, min(100, 100 - float(used)))
-
-
-def window_tooltip(window):
-    minutes=window.get('windowDurationMins')
-    parts=[]
-    if isinstance(minutes,(int,float)) and minutes>0:
-        if minutes%1440==0: parts.append(f'{minutes/1440:g}-day window')
-        elif minutes%60==0: parts.append(f'{minutes/60:g}-hour window')
-        else: parts.append(f'{minutes:g}-minute window')
-    reset=window.get('resetsAt')
-    if isinstance(reset,(int,float)):
-        try: parts.append('Resets '+datetime.fromtimestamp(reset).strftime('%b %d, %H:%M'))
-        except (OSError,OverflowError,ValueError): pass
-    return '\n'.join(parts) or 'Codex usage window'
 
 
 class Tooltip:
@@ -686,6 +766,8 @@ class App:
                       selectbackground=[('!disabled',hover)],selectforeground=[('!disabled',fg)])
         style.configure('Meter.TButton',font=('Segoe UI',10),padding=(10,4),background=bg,foreground=fg,
                         bordercolor=border,lightcolor=border,darkcolor=border)
+        style.configure('Meter.TCheckbutton',font=('Segoe UI',10),background=bg,foreground=fg)
+        style.map('Meter.TCheckbutton',background=[('active',bg)],foreground=[('active',fg)])
         style.configure('ComboboxPopdownFrame',background=bg,bordercolor=border)
         style.map('Meter.TButton',background=[('active',hover),('pressed',hover)],foreground=[('active',fg)])
         for option,value in (('background',bg),('foreground',fg),('selectBackground',hover),('selectForeground',fg)):
@@ -730,7 +812,6 @@ class App:
             if isinstance(widget,tk.Canvas) and widget.find_withtag('badge_bg'):
                 widget.itemconfigure('badge_bg',fill=self.color('#f0f4f1'))
                 widget.itemconfigure('badge_text',fill=self.color('#41564b'))
-            if isinstance(widget,tk.Canvas) and hasattr(widget,'repaint'): widget.repaint()
             for child in widget.winfo_children(): recolor(child)
         recolor(self.root);self.configure_ttk();self.theme_caption(self.root)
         window=getattr(self,'settings_window',None)
@@ -802,24 +883,6 @@ class App:
         badge.create_text(width/2,height/2,text=text,font=font,fill=self.color('#41564b'),tags='badge_text')
         return badge
 
-    def allowance_bar(self,parent):
-        bar=tk.Canvas(parent,height=6,width=80,bg=self.color('#e9eaec'),bd=0,highlightthickness=0)
-        bar.remaining=None
-        def repaint(event=None):
-            bar.delete('all')
-            if bar.remaining is not None:
-                bar.create_rectangle(0,0,bar.winfo_width()*bar.remaining/100,6,
-                                     fill=self.color('#185c40'),outline='')
-        bar.repaint=repaint
-        bar.bind('<Configure>',repaint)
-        return bar
-
-    def set_allowance(self,bar,window):
-        used=window.get('usedPercent') if isinstance(window,dict) else None
-        try: bar.remaining=remaining_percent(used) if used is not None else None
-        except (TypeError,ValueError): bar.remaining=None
-        bar.repaint()
-
     def compact_height(self):
         """Fit the first speed table once at startup; refresh never resizes the app."""
         self.root.update_idletasks()
@@ -849,28 +912,15 @@ class App:
         self.content_widgets=widgets
         limits=tk.Frame(self.body,bg=self.bg);limits.pack(fill='x')
         line=tk.Frame(limits,bg=self.bg);line.pack(fill='x',pady=(0,10))
-        self.label(line,'Codex',11,'#222426',bold=True,anchor='w').pack(side='left',padx=(0,8))
+        widgets['primary']=self.label(line,'',16,'#222426',anchor='w')
+        widgets['primary'].pack(side='left')
         for symbol,command,tip in [('⚙',self.settings_dialog,'Settings'),('↻',self.refresh,'Refresh')]:
             button=tk.Button(line,text=symbol,command=command,font=('Segoe UI Symbol',15),relief='flat',bd=0,bg=self.bg,fg=self.color('#72797d'),activebackground=self.color('#f2f4f3'),activeforeground=self.color('#222426'),cursor='hand2',padx=5,takefocus=False)
             button.pack(side='right',padx=2);Tooltip(button,tip)
-        widgets['primary']=self.label(line,'',10,'#222426',anchor='e')
-        widgets['primary'].pack(side='right',padx=(8,0))
-        widgets['primary_bar']=self.allowance_bar(line);widgets['primary_bar'].pack(side='left',fill='x',expand=True)
-        widgets['primary_tip']=Tooltip(widgets['primary_bar'],'')
-        widgets['account_info']=self.label(limits,'',9,anchor='w')
-        widgets['account_info'].pack(fill='x',pady=(0,5))
-        widgets['account_tip']=Tooltip(widgets['account_info'],'')
-        widgets['account_stats']=self.label(limits,'',9,anchor='w',wraplength=400,justify='left')
-        widgets['account_stats'].pack(fill='x',pady=(0,4))
         secondary=tk.Frame(limits,bg=self.bg)
         widgets['secondary_frame']=secondary
-        self.label(secondary,'Other window',9,anchor='w').pack(side='left',padx=(0,8))
-        widgets['secondary']=self.label(secondary,'',10,'#222426',anchor='e')
-        widgets['secondary'].pack(side='right',padx=(8,0))
-        widgets['secondary_bar']=self.allowance_bar(secondary);widgets['secondary_bar'].pack(side='left',fill='x',expand=True)
-        widgets['secondary_tip']=Tooltip(widgets['secondary_bar'],'')
-        widgets['accounts_frame']=tk.Frame(limits,bg=self.bg)
-        widgets['accounts_frame'].pack(fill='x',pady=(0,10))
+        widgets['secondary']=self.label(secondary,'',16,'#222426',anchor='w')
+        widgets['secondary'].pack(side='left')
         cols=tk.Frame(self.body,bg=self.bg); cols.pack(fill='x')
         for index,(title,key,cost) in enumerate([('This month','month_tokens','month_cost'),('All time','total_tokens','total_cost')]):
             cols.columnconfigure(index,weight=1,uniform='totals')
@@ -880,9 +930,9 @@ class App:
             price=self.label(f,'',11,'#73777b',anchor='w');price.pack(fill='x')
             widgets['usage'][key]=number;widgets['usage'][cost]=price
             Tooltip(price,'Estimated API-equivalent cost (USD)')
-        delta=self.label(self.body,'',10,'#185c40',anchor='w')
+        delta=self.label(self.body,'',10,'#185c40',anchor='w',justify='left')
         delta.pack(fill='x',pady=(7,10));widgets['delta']=delta
-        Tooltip(delta,lambda:delta_tooltip(self.data) if self.data.get('delta') is not None else 'Available after the next successful refresh')
+        Tooltip(delta,lambda:delta_tooltip(self.data,self.settings) if 'delta_sources' in self.data or self.data.get('delta') is not None else 'Available after the next successful refresh')
         tk.Frame(self.body,bg=self.color('#e9eaec'),height=1).pack(fill='x')
         self.label(self.body,'Speed',12,'#292d30',anchor='w').pack(fill='x',pady=(11,7))
         for days in ('1','14'):
@@ -908,97 +958,28 @@ class App:
         """Update only the widgets owned by a changed source, keeping the page intact."""
         widgets=self.content_widgets
         if source in (None,'limits'):
-            limits=self.data.get('limits',{})
+            limits=displayed_limits(self.data,self.settings)
             windows=[x for x in (limits.get('primary'),limits.get('secondary')) if x and x.get('usedPercent') is not None]
             text=lambda window:f"{remaining_percent(window['usedPercent']):g}% remaining"
             self.set_widget_options(widgets['primary'],text=text(windows[0]) if windows else 'Usage unavailable')
-            self.set_allowance(widgets['primary_bar'],windows[0] if windows else {})
-            widgets['primary_tip'].text=window_tooltip(windows[0]) if windows else 'No rate-limit window available'
             secondary=widgets['secondary_frame']
             if len(windows)>1:
                 self.set_widget_options(widgets['secondary'],text=text(windows[1]))
-                self.set_allowance(widgets['secondary_bar'],windows[1])
-                widgets['secondary_tip'].text=window_tooltip(windows[1])
-                if not secondary.winfo_manager(): secondary.pack(fill='x',pady=(0,10),before=widgets['accounts_frame'])
+                if not secondary.winfo_manager(): secondary.pack(fill='x',pady=(0,10))
             elif secondary.winfo_manager(): secondary.pack_forget()
         if source in (None,'usage'):
-            usage=self.data.get('usage',{})
+            usage=displayed_usage(self.data,self.settings)
             for key in ('month_tokens','total_tokens'):
                 number=usage.get(key)
-                if number is not None and key=='total_tokens': number+=self.settings['reserve']
+                reserve_applies='sources' not in usage or any(item.get('short','').startswith('GPT') for item in usage['sources'])
+                if number is not None and key=='total_tokens' and reserve_applies: number+=self.settings['reserve']
                 self.set_widget_options(widgets['usage'][key],text=f'{number:,}' if number is not None else '—')
             for key in ('month_cost','total_cost'):
                 cost=usage.get(key)
                 self.set_widget_options(widgets['usage'][key],text=f'${cost:,.2f}' if cost is not None else '—')
-            delta=self.data.get('delta')
-            self.set_widget_options(widgets['delta'],text=f'{delta:+,} tokens' if delta is not None else '—')
+            self.set_widget_options(widgets['delta'],text=delta_text(self.data,self.settings))
         if source in (None,'speed'):
-            for days in ('1','14'): self.update_speed(days,self.data.get('speed',{}).get(days,[]))
-        if source in (None,'limits','usage','speed'): self.update_accounts()
-
-    def update_accounts(self):
-        widgets=self.content_widgets
-        accounts=self.data.get('limits',{}).get('accounts',[])
-        chats=[account for account in accounts if account.get('kind')=='chatgpt']
-        others=[account for account in accounts if account.get('kind')!='chatgpt']
-        usage={item['source']:item for item in self.data.get('usage',{}).get('sources',[]) if 'source' in item}
-        speed={item['source']:item for item in self.data.get('speed',{}).get('sources',[]) if 'source' in item}
-        def details(account):
-            parts=[]
-            if account.get('email'): parts.append(account['email'])
-            if account.get('plan'): parts.append(str(account['plan']))
-            if account.get('label'): parts.append(account['label'])
-            if account.get('error'): parts.append(account['error'])
-            return ' · '.join(parts)
-        def stats(account):
-            parts=[]
-            local=usage.get(account.get('source'))
-            if local: parts.append(f"{local['month_tokens']:,} local tokens/mo")
-            rows=speed.get(account.get('source'),{}).get('1',[])
-            if rows:
-                parts.append('1d '+f"{rows[0]['model']} {rows[0]['normal']}/{rows[0]['fast']}"+' t/s')
-            return ' · '.join(parts)
-        def speed_tip(account):
-            rows=speed.get(account.get('source'),{}).get('1',[])
-            text=['Local 1-day speed by model (effective tokens/s)']
-            text.extend(f"{row['model']}: normal {row['normal']}, fast {row['fast']}" for row in rows)
-            return '\n'.join(text) if rows else 'No local 1-day speed samples'
-        first=chats[0] if chats else None
-        self.set_widget_options(widgets['account_info'],text=('ChatGPT · '+details(first)) if first else '')
-        self.set_widget_options(widgets['account_stats'],text=stats(first) if first else '')
-        widgets['account_tip'].text=(details(first)+'\n\n'+speed_tip(first)) if first else 'No ChatGPT account detected'
-        frame=widgets['accounts_frame']
-        for child in frame.winfo_children(): child.destroy()
-        for account in chats[1:]+others:
-            row=tk.Frame(frame,bg=self.bg);row.pack(fill='x',pady=(0,5))
-            if account.get('kind')=='chatgpt':
-                heading='ChatGPT · '+details(account)
-                window=(account.get('limits') or {}).get('primary') or {}
-                used=window.get('usedPercent')
-                value=f"{remaining_percent(used):g}% remaining" if used is not None else 'Usage unavailable'
-            elif account.get('kind')=='apiKey':
-                heading='API key · '+details(account)
-                value='Balance unavailable'
-            else:
-                heading=str(account.get('kind') or 'Account')+' · '+details(account)
-                value='Usage unavailable'
-            self.label(row,value,9,anchor='e').pack(side='right',padx=(6,0))
-            title=self.label(row,heading,9,'#292d30',anchor='w')
-            title.pack(side='left',fill='x',expand=True)
-            Tooltip(title,details(account)+'\n\n'+speed_tip(account))
-            summary=stats(account)
-            if summary:
-                self.label(frame,summary,9,anchor='w',wraplength=400,justify='left').pack(fill='x',pady=(0,5))
-            if account.get('kind')=='chatgpt':
-                bar=self.allowance_bar(frame);bar.pack(fill='x',pady=(0,5));self.set_allowance(bar,window)
-                Tooltip(bar,window_tooltip(window))
-                secondary=(account.get('limits') or {}).get('secondary') or {}
-                if secondary.get('usedPercent') is not None:
-                    extra=tk.Frame(frame,bg=self.bg);extra.pack(fill='x',pady=(0,5))
-                    self.label(extra,'Other window',9,anchor='w').pack(side='left',padx=(0,8))
-                    self.label(extra,f"{remaining_percent(secondary['usedPercent']):g}% remaining",9,anchor='e').pack(side='right')
-                    bar=self.allowance_bar(extra);bar.pack(side='left',fill='x',expand=True,padx=(0,8))
-                    self.set_allowance(bar,secondary);Tooltip(bar,window_tooltip(secondary))
+            for days in ('1','14'): self.update_speed(days,displayed_speed(self.data,days,self.settings))
 
     def update_speed(self,days,rows):
         widgets=self.content_widgets;grid=widgets['grids'][days];existing=widgets['speed'][days]
@@ -1064,20 +1045,52 @@ class App:
             combo=ttk.Combobox(box,textvariable=variable,values=values,state='readonly',width=18,font=('Segoe UI',10),style='Meter.TCombobox')
             combo.configure(postcommand=lambda widget=combo:self.style_dropdown(widget))
             combo.grid(row=row,column=1,padx=(20,0))
-        self.label(box,'Reserve adjustment (tokens)',11,anchor='w').grid(row=2,column=0,sticky='w',pady=6)
-        ttk.Entry(box,textvariable=r,width=21,font=('Segoe UI',10),style='Meter.TEntry').grid(row=2,column=1,padx=(20,0))
+        account_box=tk.Frame(box,bg=self.bg);account_box.grid(row=2,column=0,columnspan=2,sticky='ew',pady=(10,12))
+        self.label(account_box,'Local Codex accounts',11,'#292d30',anchor='w').pack(fill='x',pady=(0,5))
+        homes=codex_homes();names=account_names(homes)
+        cached={item.get('source'):item for item in self.data.get('limits',{}).get('accounts',[])}
+        account_vars={}
+        self.settings_vars['accounts']=account_vars
+        choices=account_box
+        if len(homes)>5:
+            viewport=tk.Frame(account_box,bg=self.bg);viewport.pack(fill='x')
+            canvas=tk.Canvas(viewport,height=140,bg=self.bg,bd=0,highlightthickness=0)
+            scrollbar=ttk.Scrollbar(viewport,orient='vertical',command=canvas.yview)
+            scrollbar.pack(side='right',fill='y');canvas.pack(side='left',fill='x',expand=True)
+            canvas.configure(yscrollcommand=scrollbar.set)
+            choices=tk.Frame(canvas,bg=self.bg);item=canvas.create_window(0,0,window=choices,anchor='nw')
+            choices.bind('<Configure>',lambda event:canvas.configure(scrollregion=canvas.bbox('all')))
+            canvas.bind('<Configure>',lambda event:canvas.itemconfigure(item,width=event.width))
+        for home in homes:
+            identity=source_id(home);account=cached.get(identity,{})
+            variable=tk.BooleanVar(value=enabled_source(identity,self.settings));account_vars[identity]=variable
+            text=' · '.join(str(value) for value in (names[identity],account.get('plan'),home.name) if value)
+            option=ttk.Checkbutton(choices,text=text,variable=variable,style='Meter.TCheckbutton')
+            option.pack(anchor='w',pady=2)
+            Tooltip(option,str(home)+('\n'+account['email'] if account.get('email') else ''))
+        if not homes: self.label(account_box,'No local Codex accounts found',10,anchor='w').pack(fill='x')
+        self.label(account_box,'Off excludes this account from the next refresh and displayed totals.',9,anchor='w',wraplength=SETTINGS_WRAP,justify='left').pack(fill='x',pady=(5,0))
+        self.label(box,'Reserve adjustment (tokens)',11,anchor='w').grid(row=3,column=0,sticky='w',pady=6)
+        ttk.Entry(box,textvariable=r,width=21,font=('Segoe UI',10),style='Meter.TEntry').grid(row=3,column=1,padx=(20,0))
         reserve_help=(
-            'Fills gaps in locally recorded gpt-reserve tokens. Some reserve '
-            'usage is already counted.\n\n'
-            'OpenAI describes Luna Reserve as GPT-5.6 Luna. ccusage uses that '
-            'alias for pricing; it cannot verify backend routing or recover '
-            'missing records.\n\n'
-            'If you have a comparable official token total, subtract the raw '
-            'logged total for the same account, devices and period. Enter that '
-            'gap here. Added once to all-time tokens only, not monthly tokens '
-            'or USD. Set 0 for no adjustment.'
+            'Manual correction for missing reserve tokens. Added once to all-time '
+            'tokens while a GPT account is enabled. Monthly tokens and costs are '
+            'unchanged. Set 0 for no adjustment.'
         )
-        self.label(box,reserve_help,10,anchor='w',wraplength=SETTINGS_WRAP,justify='left').grid(row=3,column=0,columnspan=2,sticky='w',pady=8)
+        self.label(box,reserve_help,10,anchor='w',wraplength=SETTINGS_WRAP,justify='left').grid(row=4,column=0,columnspan=2,sticky='w',pady=8)
+        def toggle(identity,variable):
+            updated=dict(self.settings);disabled=set(updated.get('disabled_sources',[]))
+            if variable.get(): disabled.discard(identity)
+            else: disabled.add(identity)
+            if disabled: updated['disabled_sources']=sorted(disabled)
+            else: updated.pop('disabled_sources',None)
+            try: save(CONFIG,updated)
+            except OSError as exc:
+                self.status.config(text='Could not save settings');self.status_detail=str(exc);return
+            self.settings=updated
+            self.render_results()
+        for identity,variable in account_vars.items():
+            traces.append((variable,variable.trace_add('write',lambda *args,identity=identity,variable=variable:toggle(identity,variable))))
         def commit(close=False,quiet=False):
             if self.settings_save_job is not None:
                 self.root.after_cancel(self.settings_save_job);self.settings_save_job=None
@@ -1089,7 +1102,7 @@ class App:
             except (ValueError,KeyError):
                 if not quiet: messagebox.showerror('Settings','Enter a non-negative whole number.',parent=win)
                 return False
-            updated={'interval':interval,'reserve':num,'appearance':mode}
+            updated={**self.settings,'interval':interval,'reserve':num,'appearance':mode}
             try: save(CONFIG,updated)
             except OSError as exc:
                 self.status.config(text='Could not save settings');self.status_detail=str(exc)
@@ -1111,8 +1124,8 @@ class App:
         traces.append((r,r.trace_add('write',delayed)))
         self.close_settings=lambda:commit(close=True)
         win.protocol('WM_DELETE_WINDOW',self.close_settings)
-        ttk.Button(box,text='Save',command=self.close_settings,style='Meter.TButton').grid(row=4,column=1,sticky='e',pady=(10,0))
-        about=tk.Frame(box,bg=self.bg);about.grid(row=5,column=0,columnspan=2,sticky='ew')
+        ttk.Button(box,text='Save',command=self.close_settings,style='Meter.TButton').grid(row=5,column=1,sticky='e',pady=(10,0))
+        about=tk.Frame(box,bg=self.bg);about.grid(row=6,column=0,columnspan=2,sticky='ew')
         self.build_about(about)
         win.update_idletasks()
         win.geometry(f'+{max(0,min(self.root.winfo_rootx()+20,win.winfo_screenwidth()-win.winfo_reqwidth()))}+'
@@ -1155,6 +1168,7 @@ class App:
         if self.busy: return
         if self.job: self.root.after_cancel(self.job);self.job=None
         self.usage_baseline=dict(self.data['usage']) if 'usage' in self.data else None
+        self.scan_homes=enabled_homes(settings=self.settings)
         self.busy=True; self.refresh_started=time.monotonic(); self.pending={'usage','limits','speed'}
         self.refresh_errors=[]; self.refresh_notes=[]; self.refresh_timings={}
         self.status.config(text='Refreshing…')
@@ -1166,7 +1180,7 @@ class App:
             try: return name,fn(),None,time.monotonic()-started
             except Exception as exc: return name,None,str(exc).replace('\n',' ')[:180],time.monotonic()-started
         with ThreadPoolExecutor(max_workers=3) as pool:
-            futures=[pool.submit(scan,name,fn) for name,fn in [('usage',get_usage),('limits',get_limits),('speed',get_speed)]]
+            futures=[pool.submit(scan,name,lambda fn=fn:fn(self.scan_homes)) for name,fn in [('usage',get_usage),('limits',get_limits),('speed',get_speed)]]
             for future in as_completed(futures): self.results.put(future.result())
     def check_results(self):
         if self.closed: return
@@ -1180,7 +1194,18 @@ class App:
                 if name=='limits' and value.get('errors'):
                     self.refresh_errors.append('limits: Account or limits unavailable for '+', '.join(value['errors']))
                 if name=='usage':
+                    failed=value.get('failed_sources',[])
+                    if failed:
+                        self.refresh_errors.append('usage: '+', '.join(item['short'] for item in failed)+' unavailable')
+                        old={item['source']:item for item in (self.usage_baseline or {}).get('sources',[])}
+                        cached=[{**old[item['source']],'stale':True} for item in failed if item['source'] in old]
+                        order={source_id(home):index for index,home in enumerate(self.scan_homes)}
+                        sources=sorted(value['sources']+cached,key=lambda item:order.get(item['source'],len(order)))
+                        value={**value,**combined_usage(sources,value['month'])}
                     apply_usage_result(self.data,value,self.usage_baseline,time.time())
+                    for item in failed:
+                        if not any(row['source']==item['source'] for row in self.data['delta_sources']):
+                            self.data['delta_sources'].append({**item,'delta':None})
                 self.data[name]=value
                 self.data.setdefault('updated_at',{})[name]=time.time()
                 self.data['status']=name.capitalize()+' updated '+datetime.now().strftime('%H:%M')
@@ -1408,7 +1433,7 @@ def worker_main():
                 futures=[pool.submit(measure,name,fn) for name,fn in [('usage',get_usage),('limits',get_limits),('speed',get_speed)]]
                 for future in as_completed(futures):
                     name,result=future.result(); value[name]=result
-        elif args[0]=='--speed-all': value=scan_speed()
+        elif args[0]=='--speed-all': value=scan_speed([Path(home) for home in json.loads(args[1])] if len(args)>1 else None)
         elif args[0]=='--speed-batch': value=speed_batch(args[1])
         else:
             script=args[1]; sys.argv=[script]+args[2:]

@@ -1,45 +1,38 @@
-"""Open the real UI with synthetic data for screenshots; no scans or saved data."""
+"""Preview the real UI with synthetic multi-account data."""
 from pathlib import Path
 import sys
+import tempfile
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import meter
-
-with patch.object(meter.App, 'refresh'), patch.object(meter.App, 'setup_tray'):
-    app = meter.App()
-app.settings = {'interval': 0, 'reserve': 0}
-if app.job:
-    app.root.after_cancel(app.job)
-    app.job = None
 
 def rows(values):
     return [dict(model=model, normal=normal, fast=fast, ratio=ratio,
                  normal_n='120', fast_n='160')
             for model, normal, fast, ratio in values]
-app.data = {
-    'limits': {'primary': {'usedPercent': 18, 'windowDurationMins': 300},
-               'secondary': {'usedPercent': 32, 'windowDurationMins': 10080},
-               'accounts': [
-                   {'kind': 'chatgpt', 'email': 'alex@example.com', 'label': '.codex', 'source': 'chat'},
-                   {'kind': 'apiKey', 'label': '.codex-api', 'source': 'api'}]},
-    'usage': {'month_tokens': 128453620, 'month_cost': 142.86,
-              'total_tokens': 2041750980, 'total_cost': 2184.32,
-              'sources': [{'source': 'chat', 'month_tokens': 120000000},
-                          {'source': 'api', 'month_tokens': 8453620}]},
-    'delta': 1842650,
-    'speed': {
-        '1': rows([('gpt-6.1-sol', '34.8', '56.7', '1.63×'),
-                   ('gpt-6-astra', '25.1', '31.4', '1.25×'),
-                   ('gpt-6-luna', '72.0', '67.0', '0.93×')]),
-        '14': rows([('gpt-6.1-sol', '33.6', '52.1', '1.55×'),
-                    ('gpt-6-astra', '24.9', '32.5', '1.31×'),
-                    ('gpt-6-luna', '71.4', '68.5', '0.96×')]),
-        'sources': [{'source': 'chat', '1': rows([('gpt-6.1-sol', '34.8', '56.7', '1.63×')])},
-                    {'source': 'api', '1': rows([('gpt-6-astra', '25.1', '31.4', '1.25×')])}]},
-    'status': 'Updated 10:42',
-}
-app.root.title('Codex Meter Preview')
-app.root.geometry('+480+100')
-app.root.protocol('WM_DELETE_WINDOW', app.root.destroy)
-app.draw()
-app.root.mainloop()
+def sample_data():
+    normal=rows([('gpt-6.1-sol','34.8','56.7','1.63×'),
+                 ('gpt-6-astra','25.1','31.4','1.25×')])
+    api=rows([('gpt-6.1-terra','48.2','·','·')])
+    return {
+        'limits': {'primary': {'usedPercent':18}, 'secondary': {'usedPercent':32}},
+        'usage': meter.combined_usage([
+            {'source':'chat','short':'GPT','month_tokens':120000000,'total_tokens':2000000000,'month_cost':130,'total_cost':2100},
+            {'source':'api','short':'API','month_tokens':8453620,'total_tokens':41750980,'month_cost':12.86,'total_cost':84.32}], '2026-10'),
+        'delta_sources':[{'source':'chat','short':'GPT','delta':1800000},
+                         {'source':'api','short':'API','delta':42650}],
+        'speed': {'sources':[{'source':'chat','short':'GPT','1':normal,'14':normal},
+                             {'source':'api','short':'API','1':api,'14':api}]},
+        'status':'Updated 10:42'
+    }
+
+
+if __name__=='__main__':
+    with tempfile.TemporaryDirectory() as tmp:
+        with patch.object(meter,'CONFIG',Path(tmp)/'settings.json'), patch.object(meter,'SNAPSHOT',Path(tmp)/'snapshot.json'), patch.object(meter.App,'setup_tray'), patch.object(meter.App,'schedule'), patch.object(meter.App,'schedule_app_update_check'):
+            meter.save(meter.CONFIG,{'interval':0,'reserve':0,'appearance':'system'})
+            meter.save(meter.SNAPSHOT,sample_data())
+            app=meter.App()
+            app.root.title('Codex Meter Preview')
+            app.root.protocol('WM_DELETE_WINDOW',app.root.destroy)
+            app.root.mainloop()

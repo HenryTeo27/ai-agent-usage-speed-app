@@ -311,7 +311,7 @@ class RefreshTests(InvisibleGuiTests):
             app=meter.App()
         app.root.withdraw(); app.settings['interval']=0; app.data={}
         usage={'month':'2026-10','month_tokens':123,'month_cost':1,'total_tokens':123,'total_cost':1}
-        def slow_speed(): gate.wait(3); return {},''
+        def slow_speed(*args): gate.wait(3); return {},''
         with tempfile.TemporaryDirectory() as tmp, patch.object(meter,'SNAPSHOT',Path(tmp)/'snapshot.json'), patch.object(meter,'get_usage',return_value=usage), patch.object(meter,'get_limits',return_value={}), patch.object(meter,'get_speed',side_effect=slow_speed):
             app.refresh()
             deadline=meter.time.monotonic()+2
