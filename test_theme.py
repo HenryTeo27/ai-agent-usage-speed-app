@@ -50,7 +50,7 @@ class ThemeTests(unittest.TestCase):
             finally:
                 app.closed=True;app.root.destroy()
 
-    def test_rounded_period_badges_keep_labels_and_follow_both_themes(self):
+    def test_period_labels_have_no_background_box_and_follow_themes(self):
         meter.load_gui()
         with patch.object(meter.App,'show'),patch.object(meter.App,'setup_tray'),patch.object(meter.App,'refresh'),patch.object(meter.App,'schedule'),patch.object(meter.App,'publish_ready'):
             app=meter.App()
@@ -59,14 +59,13 @@ class ThemeTests(unittest.TestCase):
                     for child in widget.winfo_children():
                         yield child
                         yield from descendants(child)
-                badges=[w for w in descendants(app.body) if isinstance(w,meter.tk.Canvas) and w.find_withtag('badge_bg')]
-                self.assertEqual([w.itemcget('badge_text','text') for w in badges],['1 day','14 days'])
+                periods=[w for w in descendants(app.body) if isinstance(w,meter.tk.Label) and w.cget('text') in ('1 day','14 days')]
+                self.assertEqual(len(periods),2)
                 for dark in (True,False):
                     app.sync_theme(dark);app.root.update_idletasks()
-                    for badge in badges:
-                        self.assertEqual(badge.itemcget('badge_bg','fill'),app.color('#f0f4f1'))
-                        self.assertEqual(badge.itemcget('badge_text','fill'),app.color('#41564b'))
-                        self.assertEqual(badge.itemcget('badge_bg','smooth'),'true')
+                    for label in periods:
+                        self.assertEqual(label.cget('bg'),app.bg)
+                        self.assertEqual(label.cget('fg'),app.color('#41564b'))
                     self.assertEqual(app.root.state(),'withdrawn')
             finally:
                 app.closed=True;app.root.destroy()

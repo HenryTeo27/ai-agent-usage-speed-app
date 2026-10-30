@@ -9,7 +9,7 @@ A small Windows desktop meter for Codex usage and speed. Close it to the notific
 
 *Codex Meter in dark and light mode.*
 
-The current interface uses slightly larger text and wider outer padding. The window starts at 500 pixels wide and fits the current 1-day speed table with a little bottom space. Scroll down to see 14 days. Refresh does not resize the window. Side margins remain 28 pixels; muted gray window controls stay flush with the top-right edge. Period badges have pill corners and the window uses a larger corner radius.
+The current interface uses slightly larger text and wider outer padding. The window starts at 500 pixels wide and fits the current 1-day speed table with a little bottom space. Scroll down to see 14 days. Refresh does not resize the window. Side margins remain 28 pixels; muted gray window controls stay flush with the top-right edge. Period headings are plain text, without background boxes. The window uses a larger corner radius.
 
 Appearance in Settings offers **System**, **Light** and **Dark**. System follows Windows' default app mode, including Custom mode. Light and Dark remain selected when Windows changes theme. Dark mode uses charcoal surfaces, lighter text and readable green, amber and red values. Switching appearance does not restart the app or scan logs.
 
@@ -76,7 +76,7 @@ Costs are estimated API-equivalent costs from [ccusage](https://github.com/ccusa
 
 ### Accounts and local homes
 
-The app looks for `~/.codex`, other `~/.codex*` directories containing Codex config, credentials or sessions, and the current or Windows-saved `CODEX_HOME`. To add homes elsewhere, set the Windows user environment variable `CODEX_METER_EXTRA_HOMES` to their full paths separated by semicolons, then reopen Settings. Each home appears under **Local Codex accounts**. GPT, API, GPT2 and API2 are short local source names; the directory and available plan details identify each entry in Settings.
+The app looks for `~/.codex`, other `~/.codex*` directories containing Codex config, credentials or sessions, and the current or Windows-saved `CODEX_HOME`. To add homes elsewhere, set the Windows user environment variable `CODEX_METER_EXTRA_HOMES` to their full paths separated by semicolons, then reopen Settings. Each home appears under **Local Codex accounts**. Account prefixes use purple, green, blue, orange, pink and cyan in source order, with lighter variants in dark mode. Models and numbers retain their usual colors. GPT, API, GPT2 and API2 are short local source names; the directory and available plan details identify each entry in Settings.
 
 Account switches save immediately. Disabled sources are excluded from displayed totals, deltas and speed rows and are skipped by subsequent refreshes. A refresh already running finishes with the selection captured at its start. Re-enabling a source displays its cached data until the next refresh. The first successful scan of a newly enabled source establishes its token-change baseline.
 

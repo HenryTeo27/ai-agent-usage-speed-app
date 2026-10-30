@@ -41,7 +41,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.1.1'
+VERSION = '1.1.2'
 REPOSITORY = 'https://github.com/HenryTeo27/ai-agent-usage-speed-app'
 CONTENT_PAD = 28
 SETTINGS_WRAP = 450
@@ -67,7 +67,10 @@ DARK_COLORS = {
     '#42474b':'#cbd3db', '#858b92':'#929aa3', '#e9ecee':'#333a42', '#f2f4f3':'#2c333b',
     '#e9eaec':'#343c45', '#41564b':'#b8d3c3', '#f0f4f1':'#27382f',
     '#185c40':'#82cda8', '#947019':'#dfbd73', '#9b3038':'#ec929a',
+    '#7c3aed':'#b69aff', '#15803d':'#72d6a0', '#1d4ed8':'#8db5ff',
+    '#b45309':'#ffbf70', '#be185d':'#f6a0cb', '#0e7490':'#76d6e8',
 }
+ACCOUNT_COLORS=('#7c3aed','#15803d','#1d4ed8','#b45309','#be185d','#0e7490')
 
 
 def theme_color(color, dark):
@@ -76,7 +79,7 @@ def theme_color(color, dark):
 
 def load_gui():
     """Workers and second-instance launchers do not load the desktop libraries."""
-    global tk, ttk, messagebox, pystray, Image, ImageTk
+    global tk, ttk, messagebox, pystray, Image, ImageTk, AccountLabel
     if 'tk' in globals(): return
     if os.name == 'nt':
         import ctypes
@@ -86,6 +89,32 @@ def load_gui():
     from tkinter import ttk, messagebox
     import pystray
     from PIL import Image, ImageTk
+
+    class AccountLabel(tk.Text):
+        """Read-only text with a separately colored account prefix on each line."""
+        def __init__(self,parent,app,font,color):
+            self.app=app;self.text_value=''
+            super().__init__(parent,font=font,height=1,width=1,bd=0,highlightthickness=0,
+                             padx=2,pady=1,state='disabled',cursor='arrow',takefocus=False,
+                             wrap='none',bg=app.bg,fg=app.color(color))
+        def cget(self,key):
+            return self.text_value if key=='text' else super().cget(key)
+        def configure(self,cnf=None,**kw):
+            value=kw.pop('text',None)
+            result=super().configure(cnf,**kw)
+            if value is not None:
+                self.text_value=value
+                super().configure(state='normal',height=max(1,len(value.splitlines())))
+                self.delete('1.0','end');self.insert('1.0',value)
+                for line,text in enumerate(value.splitlines(),1):
+                    match=re.match(r'^(GPT\d*|API\d*|Codex\d*) ',text)
+                    if match:
+                        tag='account_'+match[1]
+                        self.tag_configure(tag,foreground=self.app.color(self.app.account_color(match[1])))
+                        self.tag_add(tag,f'{line}.0',f'{line}.{len(match[1])}')
+                super().configure(state='disabled')
+            return result
+        config=configure
 
 
 def load_icon(size):
@@ -751,6 +780,16 @@ class App:
 
     def color(self,value): return theme_color(value,self.dark)
 
+    def account_color(self,short):
+        names=getattr(self,'account_order',None)
+        if names is None:
+            names=list(account_names(codex_homes()).values());self.account_order=names
+        for key in ('usage','speed'):
+            for item in self.data.get(key,{}).get('sources',[]):
+                if item.get('short') and item['short'] not in names: names.append(item['short'])
+        index=names.index(short) if short in names else 0
+        return ACCOUNT_COLORS[index%len(ACCOUNT_COLORS)]
+
     def update_logo(self):
         self.logo=ImageTk.PhotoImage(themed_icon(32,self.dark).resize((28,28),Image.Resampling.LANCZOS),master=self.root)
         self.logo_widget.configure(image=self.logo)
@@ -812,6 +851,10 @@ class App:
             if isinstance(widget,tk.Canvas) and widget.find_withtag('badge_bg'):
                 widget.itemconfigure('badge_bg',fill=self.color('#f0f4f1'))
                 widget.itemconfigure('badge_text',fill=self.color('#41564b'))
+            if isinstance(widget,AccountLabel):
+                for tag in widget.tag_names():
+                    if tag.startswith('account_'):
+                        widget.tag_configure(tag,foreground=self.color(self.account_color(tag[8:])))
             for child in widget.winfo_children(): recolor(child)
         recolor(self.root);self.configure_ttk();self.theme_caption(self.root)
         window=getattr(self,'settings_window',None)
@@ -870,18 +913,7 @@ class App:
         return tk.Label(parent,text=text,bg=self.bg,fg=self.color(color),font=(font,size,'bold' if bold else 'normal'),**kw)
 
     def period_badge(self,parent,text):
-        from tkinter import font as tkfont
-        font=tkfont.Font(root=self.root,font=('Segoe UI Semibold',11))
-        width=font.measure(text)+20;height=font.metrics('linespace')+6
-        radius=height/2
-        badge=tk.Canvas(parent,width=width,height=height,bg=self.bg,bd=0,highlightthickness=0)
-        badge.badge_font=font
-        badge.create_polygon(radius,0,width-radius,0,width,0,width,radius,
-                             width,height-radius,width,height,width-radius,height,
-                             radius,height,0,height,0,height-radius,0,radius,0,0,
-                             smooth=True,splinesteps=24,fill=self.color('#f0f4f1'),outline='',tags='badge_bg')
-        badge.create_text(width/2,height/2,text=text,font=font,fill=self.color('#41564b'),tags='badge_text')
-        return badge
+        return self.label(parent,text,11,'#41564b',bold=True,anchor='w')
 
     def compact_height(self):
         """Fit the first speed table once at startup; refresh never resizes the app."""
@@ -930,7 +962,7 @@ class App:
             price=self.label(f,'',11,'#73777b',anchor='w');price.pack(fill='x')
             widgets['usage'][key]=number;widgets['usage'][cost]=price
             Tooltip(price,'Estimated API-equivalent cost (USD)')
-        delta=self.label(self.body,'',10,'#185c40',anchor='w',justify='left')
+        delta=AccountLabel(self.body,self,('Segoe UI',10),'#185c40')
         delta.pack(fill='x',pady=(7,10));widgets['delta']=delta
         Tooltip(delta,lambda:delta_tooltip(self.data,self.settings) if 'delta_sources' in self.data or self.data.get('delta') is not None else 'Available after the next successful refresh')
         tk.Frame(self.body,bg=self.color('#e9eaec'),height=1).pack(fill='x')
@@ -991,7 +1023,7 @@ class App:
             if item is None:
                 labels=[];tips={}
                 for col in range(4):
-                    label=self.label(grid,'',10,'#353a3e',font='Consolas',anchor='w' if col==0 else 'e')
+                    label=AccountLabel(grid,self,('Consolas',10),'#353a3e') if col==0 else self.label(grid,'',10,'#353a3e',font='Consolas',anchor='e')
                     label.grid(row=index,column=col,sticky='ew',pady=1);labels.append(label)
                     if col in (1,2,3): tips[col]=Tooltip(label,'')
                 item={'labels':labels,'tips':tips,'row':index};existing[key]=item
