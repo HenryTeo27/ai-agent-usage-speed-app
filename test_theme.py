@@ -105,6 +105,13 @@ class ThemeTests(unittest.TestCase):
             clean=source.ico.getimage((256,256)).convert('RGBA')
         self.assertEqual(clean.getchannel('A').tobytes(),meter.load_icon(256).getchannel('A').tobytes())
         self.assertEqual(len(set(meter.DARK_COLORS.values())),len(meter.DARK_COLORS))
+        def luminance(color):
+            channels=[int(color[index:index+2],16)/255 for index in (1,3,5)]
+            linear=[value/12.92 if value<=0.04045 else ((value+0.055)/1.055)**2.4 for value in channels]
+            return sum(value*weight for value,weight in zip(linear,(0.2126,0.7152,0.0722)))
+        for dark in (False,True):
+            low,high=sorted(luminance(meter.theme_color(color,dark)) for color in ('#666b73','#f1f2f4'))
+            self.assertGreaterEqual((high+0.05)/(low+0.05),4.5)
         for color in ('#185c40','#947019','#9b3038'):
             self.assertNotEqual(meter.theme_color(color,True),color)
             self.assertEqual(meter.theme_color(color,False),color)

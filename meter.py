@@ -41,7 +41,7 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.1.3'
+VERSION = '1.1.4'
 REPOSITORY = 'https://github.com/HenryTeo27/ai-agent-usage-speed-app'
 CONTENT_PAD = 28
 SETTINGS_WRAP = 450
@@ -67,7 +67,7 @@ DARK_COLORS = {
     '#42474b':'#cbd3db', '#858b92':'#929aa3', '#e9ecee':'#333a42', '#f2f4f3':'#2c333b',
     '#e9eaec':'#343c45', '#41564b':'#b8d3c3', '#f0f4f1':'#27382f',
     '#185c40':'#82cda8', '#947019':'#dfbd73', '#9b3038':'#ec929a',
-    '#f1f2f4':'#2b3037', '#6b7078':'#aeb7c2',
+    '#f1f2f4':'#2b3037', '#666b73':'#aeb7c2',
 }
 
 
@@ -118,7 +118,7 @@ def load_gui():
                                              0,height-4,0,4,0,0,smooth=True,splinesteps=16,
                                              fill=self.app.color('#f1f2f4'),outline='',tags='account_bg')
                         badge.create_text(width/2,height/2,text='',font=self.tag_font,
-                                          fill=self.app.color('#6b7078'),tags='account_text')
+                                          fill=self.app.color('#666b73'),tags='account_text')
                         label=tk.Label(row,text='',bg=self.app.bg,fg=self.app.color(self.value_color),
                                        font=self.value_font,anchor='w',padx=0,pady=1)
                         label.pack(side='right',fill='x',expand=True)
@@ -144,7 +144,7 @@ def load_gui():
             for item in self.rows:
                 item['frame'].configure(bg=self.app.bg);item['badge'].configure(bg=self.app.bg)
                 item['badge'].itemconfigure('account_bg',fill=self.app.color('#f1f2f4'))
-                item['badge'].itemconfigure('account_text',fill=self.app.color('#6b7078'))
+                item['badge'].itemconfigure('account_text',fill=self.app.color('#666b73'))
                 item['value'].configure(bg=self.app.bg,fg=self.app.color(self.value_color))
 
 

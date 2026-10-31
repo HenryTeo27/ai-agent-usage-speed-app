@@ -117,6 +117,8 @@ class MultiHomeTests(unittest.TestCase):
                 result = meter.get_usage()
             self.assertEqual(result['month_tokens'], 30)
             self.assertEqual(result['total_tokens'], 60)
+            self.assertEqual(result['month_cost'], 3)
+            self.assertEqual(result['total_cost'], 6)
             self.assertEqual([item['month_tokens'] for item in result['sources']], [10, 20])
             self.assertNotIn('secret', json.dumps(result))
 

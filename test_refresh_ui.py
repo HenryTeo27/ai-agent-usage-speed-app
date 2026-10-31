@@ -169,9 +169,21 @@ class HiddenRefreshTests(unittest.TestCase):
         self.assertNotIn('accounts_frame',widgets)
         self.assertEqual(widgets['usage']['month_tokens'].cget('text'),'160')
         self.assertEqual(widgets['usage']['total_tokens'].cget('text'),'600')
+        self.assertEqual(widgets['usage']['month_cost'].cget('text'),'$3.00')
+        self.assertEqual(widgets['usage']['total_cost'].cget('text'),'$7.00')
         self.assertEqual(widgets['delta'].cget('text'),'GPT +50 tokens\nAPI +20 tokens')
         self.assertEqual([row['labels'][0].cget('text') for row in widgets['speed']['1'].values()],
                          ['GPT gpt-test','API gpt-test'])
+        app.settings['appearance']='system'
+        for dark in (True,False,True):
+            app.sync_theme(dark)
+            for item in widgets['delta'].rows:
+                self.assertEqual(item['badge'].itemcget('account_bg','fill'),app.color('#f1f2f4'))
+                self.assertEqual(item['badge'].itemcget('account_text','fill'),app.color('#666b73'))
+                self.assertEqual(item['value'].cget('fg'),app.color('#185c40'))
+            for item in widgets['speed']['1'].values():
+                badge=item['labels'][0].rows[0]['badge']
+                self.assertEqual(badge.itemcget('account_text','fill'),app.color('#666b73'))
 
     def test_one_usage_failure_keeps_that_account_and_updates_the_other(self):
         app=self.app
@@ -195,8 +207,8 @@ class HiddenRefreshTests(unittest.TestCase):
         chat,api=map(str,homes)
         app.settings['reserve']=0
         app.data['usage']=meter.combined_usage([
-            {'source':chat,'short':'GPT','month_tokens':120,'total_tokens':500},
-            {'source':api,'short':'API','month_tokens':40,'total_tokens':100}],'2026-10')
+            {'source':chat,'short':'GPT','month_tokens':120,'total_tokens':500,'month_cost':1,'total_cost':3},
+            {'source':api,'short':'API','month_tokens':40,'total_tokens':100,'month_cost':2,'total_cost':4}],'2026-10')
         app.data['delta_sources']=[{'source':chat,'short':'GPT','delta':50},{'source':api,'short':'API','delta':20}]
         app.data['limits']={'accounts':[{'source':chat,'kind':'chatgpt','limits':{'primary':{'usedPercent':25}}}]}
         app.data['speed']={'sources':[{'source':chat,'short':'GPT','1':[self.old_row],'14':[]},
@@ -207,14 +219,20 @@ class HiddenRefreshTests(unittest.TestCase):
             self.assertEqual(meter.load_settings()['disabled_sources'],[api])
             self.assertEqual(meter.enabled_homes(homes,app.settings),[homes[0]])
             self.assertEqual(app.content_widgets['usage']['month_tokens'].cget('text'),'120')
+            self.assertEqual(app.content_widgets['usage']['month_cost'].cget('text'),'$1.00')
+            self.assertEqual(app.content_widgets['usage']['total_cost'].cget('text'),'$3.00')
             self.assertEqual(app.content_widgets['delta'].cget('text'),'GPT +50 tokens')
             self.assertEqual(list(app.content_widgets['speed']['1']),[('GPT gpt-test',0)])
             app.settings_vars['accounts'][chat].set(False)
             self.assertEqual(app.content_widgets['usage']['total_tokens'].cget('text'),'0')
+            self.assertEqual(app.content_widgets['usage']['month_cost'].cget('text'),'$0.00')
+            self.assertEqual(app.content_widgets['usage']['total_cost'].cget('text'),'$0.00')
             self.assertEqual(app.content_widgets['speed']['1'],{})
             self.assertEqual(app.content_widgets['primary'].cget('text'),'Usage unavailable')
             app.settings_vars['accounts'][api].set(True)
             self.assertEqual(app.content_widgets['usage']['month_tokens'].cget('text'),'40')
+            self.assertEqual(app.content_widgets['usage']['month_cost'].cget('text'),'$2.00')
+            self.assertEqual(app.content_widgets['usage']['total_cost'].cget('text'),'$4.00')
             self.assertTrue(app.close_settings())
         self.assertEqual(meter.load_settings()['disabled_sources'],[chat])
 
