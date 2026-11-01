@@ -52,7 +52,7 @@ class ReleaseTests(unittest.TestCase):
             updater.clean_stale_stages(Path(folder)/'updates',now=time.time()+4*86400)
             with patch.object(updater,'open_url',side_effect=AssertionError('Should remain offline')):
                 health=Mock();result=updater.resume_ready(folder,'1.0.0',health)
-            self.assertEqual(result,(candidate,stage));health.assert_called_once()
+            self.assertEqual(result,(candidate,stage.resolve()));health.assert_called_once()
             self.assertEqual((stage/'CodexMeter'/'CodexMeter.exe').read_bytes(),b'exe')
             (stage/updater.ARCHIVE).write_bytes(b'corrupt')
             with self.assertRaises(ValueError): updater.resume_ready(folder,'1.0.0',Mock())
