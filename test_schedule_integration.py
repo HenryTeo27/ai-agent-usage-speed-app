@@ -21,7 +21,7 @@ class HiddenScheduleIntegrationTests(unittest.TestCase):
                     self.assertIn('failed; will retry',app.app_update_detail)
                     self.assertTrue(meter.read(snapshot,{})['app_update_check']['retry'])
                     self.assertFalse(failure.exists())
-                    self.assertGreater(app.app_update_due()-time.time(),5*3600)
+                    self.assertGreater(app.app_update_due()-time.time(),0.5*3600)
                     self.assertEqual(app.root.state(),'withdrawn')
                 finally:
                     app.closed=True;app.root.destroy()

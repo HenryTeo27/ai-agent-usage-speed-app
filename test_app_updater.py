@@ -35,6 +35,29 @@ def archive(entries=None):
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_migration_accepts_only_canonical_or_legacy_release_assets(self):
+        release=metadata()
+        release['assets'][0]['browser_download_url']=release['assets'][0]['browser_download_url'].replace(updater.REPO,updater.LEGACY_REPO)
+        self.assertIn(updater.LEGACY_REPO,updater.release_candidate(release,'1.0.0')['url'])
+        release['assets'][0]['browser_download_url']=release['assets'][0]['browser_download_url'].replace(updater.LEGACY_REPO,'OtherOwner/codex-meter')
+        with self.assertRaises(ValueError): updater.release_candidate(release,'1.0.0')
+
+    def test_downloaded_update_survives_restart_and_rebuilds_payload_offline(self):
+        content=archive();candidate={'url':metadata()['assets'][0]['browser_download_url'],
+            'size':len(content),'sha256':hashlib.sha256(content).hexdigest(),'version':'1.2.3'}
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.object(updater,'open_url',side_effect=lambda *args,**kwargs:io.BytesIO(content)):
+                stage=updater.download_and_stage(candidate,folder,Mock())
+            (stage/'CodexMeter'/'CodexMeter.exe').write_bytes(b'changed')
+            updater.clean_stale_stages(Path(folder)/'updates',now=time.time()+4*86400)
+            with patch.object(updater,'open_url',side_effect=AssertionError('Should remain offline')):
+                health=Mock();result=updater.resume_ready(folder,'1.0.0',health)
+            self.assertEqual(result,(candidate,stage));health.assert_called_once()
+            self.assertEqual((stage/'CodexMeter'/'CodexMeter.exe').read_bytes(),b'exe')
+            (stage/updater.ARCHIVE).write_bytes(b'corrupt')
+            with self.assertRaises(ValueError): updater.resume_ready(folder,'1.0.0',Mock())
+            self.assertFalse(stage.exists())
+            self.assertIsNone(updater.ready_update(folder,'1.0.0'))
     def test_only_new_stable_releases_with_verified_exact_assets_are_selected(self):
         release=metadata()
         self.assertEqual(updater.release_candidate(release,'1.2.2')['version'],'1.2.3')
@@ -55,12 +78,12 @@ class ReleaseTests(unittest.TestCase):
         updater.check_url('https://release-assets.githubusercontent.com/example')
 
     def test_download_verifies_hash_and_runs_health_check(self):
-        content=archive();candidate={'url':'unused','size':len(content),'sha256':hashlib.sha256(content).hexdigest(),'version':'1.2.3'}
+        content=archive();candidate={'url':metadata()['assets'][0]['browser_download_url'],'size':len(content),'sha256':hashlib.sha256(content).hexdigest(),'version':'1.2.3'}
         with tempfile.TemporaryDirectory() as folder,patch.object(updater,'open_url',side_effect=lambda *args,**kwargs:io.BytesIO(content)):
             health=Mock();stage=updater.download_and_stage(candidate,folder,health)
             health.assert_called_once_with(stage/'CodexMeter'/'CodexMeter.exe','1.2.3',stage)
             self.assertTrue((stage/'CodexMeter'/'_internal'/'runtime.txt').is_file())
-            self.assertFalse((stage/updater.ARCHIVE).exists())
+            self.assertTrue((stage/updater.ARCHIVE).exists())
             updater.remove_stage(stage,Path(folder)/'updates')
             with self.assertRaises(ValueError):
                 updater.download_and_stage({**candidate,'sha256':'0'*64},folder,health)
@@ -97,7 +120,7 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError): updater.extract_bundle(file,Path(folder)/'stage')
 
     def test_failed_health_check_and_cancellation_leave_no_staged_update(self):
-        content=archive();candidate={'url':'unused','size':len(content),'sha256':hashlib.sha256(content).hexdigest(),'version':'1.2.3'}
+        content=archive();candidate={'url':metadata()['assets'][0]['browser_download_url'],'size':len(content),'sha256':hashlib.sha256(content).hexdigest(),'version':'1.2.3'}
         with tempfile.TemporaryDirectory() as folder,patch.object(updater,'open_url',side_effect=lambda *args,**kwargs:io.BytesIO(content)):
             with self.assertRaises(RuntimeError): updater.download_and_stage(candidate,folder,Mock(side_effect=RuntimeError('bad')))
             with self.assertRaises(RuntimeError): updater.download_and_stage(candidate,folder,Mock(),lambda:True)
@@ -105,6 +128,29 @@ class ReleaseTests(unittest.TestCase):
 
 
 class ApplyPolicyTests(unittest.TestCase):
+    @unittest.skipUnless(os.name=='nt','Windows sign-in recovery')
+    def test_pending_update_registers_only_one_logon_entry(self):
+        import winreg
+        with patch.object(updater,'installed_root',return_value=Path('installed')),patch.object(winreg,'CreateKeyEx') as key,patch.object(winreg,'SetValueEx') as write,patch.object(winreg,'DeleteValue') as delete:
+            updater.configure_logon_resume('meter.py',r'C:\App\CodexMeter.exe',True,'data',True)
+            self.assertEqual(write.call_args.args[1],'CodexMeterPendingUpdate')
+            self.assertIn('--start-hidden',write.call_args.args[-1])
+            updater.configure_logon_resume('meter.py',r'C:\App\CodexMeter.exe',True,'data',False)
+            delete.assert_called_once_with(key.return_value.__enter__.return_value,'CodexMeterPendingUpdate')
+    def test_next_launch_installs_a_ready_update_before_creating_a_window(self):
+        result={'candidate':{'version':'9.0.0'},'stage':'saved-stage'}
+        with patch.object(updater,'installed_root',return_value=Path('installed')),patch.object(updater,'ready_update',return_value=True),patch.object(meter,'get_app_update',return_value=result) as worker,patch.object(updater,'start_installer') as install,patch.object(meter.sys,'argv',['meter']):
+            self.assertTrue(meter.resume_app_update_before_window())
+            worker.assert_called_once_with(resume_only=True)
+            self.assertEqual(install.call_args.args[-1],2)
+
+    def test_refresh_checks_for_updates_at_most_once_per_hour(self):
+        app=meter.App.__new__(meter.App);app.app_update_root=Path('installed')
+        app.data={'app_update_check':{'checked_at':10000}};app.check_app_updates=Mock()
+        with patch.object(meter.time,'time',return_value=12000): app.check_app_updates_on_activity()
+        app.check_app_updates.assert_not_called()
+        with patch.object(meter.time,'time',return_value=13600): app.check_app_updates_on_activity()
+        app.check_app_updates.assert_called_once()
     def test_ready_marker_confirms_the_version_and_process(self):
         with tempfile.TemporaryDirectory() as folder:
             data=Path(folder);stage=data/'updates'/('update-'+uuid.uuid4().hex);stage.mkdir(parents=True)
@@ -166,11 +212,11 @@ class ApplyPolicyTests(unittest.TestCase):
         app.check_app_updates=Mock()
         with patch.object(meter.time,'time',lambda:clock.wall),patch.object(updater,'installed_root',return_value=Path('installed')):
             app.schedule_app_update_check()
-            root.advance(23*3600);app.check_app_updates.assert_not_called()
+            root.advance(5*3600);app.check_app_updates.assert_not_called()
             root.advance(3600);app.check_app_updates.assert_called_once()
             app.check_app_updates.reset_mock()
             app.data['app_update_check']={'checked_at':clock.wall,'retry':True}
-            app.schedule_app_update_check();root.advance(6*3600-1)
+            app.schedule_app_update_check();root.advance(3600-1)
             app.check_app_updates.assert_not_called()
             root.advance(1);app.check_app_updates.assert_called_once()
 
@@ -189,7 +235,7 @@ class InstallerTests(unittest.TestCase):
             source.write_text('''using System; using System.IO; using System.Threading; using System.Diagnostics;
 class FakeApp { static void Main(string[] args) {
     var pid = Process.GetCurrentProcess().Id;
-    File.WriteAllText(args[2], "{\\\"version\\\":\\\"1.2.3\\\",\\\"pid\\\":" + pid + "}");
+    File.WriteAllText(args[Array.IndexOf(args, "--update-ready")+1], "{\\\"version\\\":\\\"1.2.3\\\",\\\"pid\\\":" + pid + "}");
     Thread.Sleep(1500);
 } }''')
             compiler=Path(os.environ['WINDIR'])/'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
@@ -235,6 +281,13 @@ class FakeApp { static void Main(string[] args) {
             self.assertEqual((target/'new.txt').read_text(),'new');self.assertFalse(stage.exists())
             self.assertEqual(list(target.parent.glob('.CodexMeter-backup-*')),[])
             time.sleep(2)  # Let the owned, hidden test process release its executable.
+
+    def test_next_launch_can_restore_the_requested_window_mode(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target,stage,result=self.run_helper(folder,2,valid_runner=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertTrue((target/'new.txt').exists());self.assertFalse(stage.exists())
+            time.sleep(2)
 
 
 if __name__=='__main__': unittest.main()

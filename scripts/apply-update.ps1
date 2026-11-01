@@ -12,7 +12,7 @@ $expectedTarget = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'Programs\
 $expectedStages = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'CodexMeter\updates')).TrimEnd('\')
 if ($targetPath -ine $expectedTarget -or [IO.Path]::GetDirectoryName($stagePath) -ine $expectedStages -or
     [IO.Path]::GetFileName($stagePath) -notmatch '^update-[0-9a-f]{32}$' -or
-    $Version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' -or $Relaunch -notin @(0,1)) {
+    $Version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' -or $Relaunch -notin @(0,1,2)) {
     throw 'Unexpected updater arguments.'
 }
 $stageItem = Get-Item -LiteralPath $stagePath
@@ -36,6 +36,7 @@ function Start-Hidden([string]$Executable, [string]$Arguments) {
     Start-Process -FilePath $Executable -ArgumentList $Arguments -WorkingDirectory $targetPath -WindowStyle Hidden -PassThru
 }
 function Save-Failure {
+    Remove-Item -LiteralPath (Join-Path $expectedStages 'ready-update.json') -Force -ErrorAction SilentlyContinue
     $failure = Join-Path $expectedStages 'last-failure.json'
     $temp = Join-Path $expectedStages ('failure-' + [Guid]::NewGuid().ToString('N') + '.tmp')
     try {
@@ -43,6 +44,15 @@ function Save-Failure {
             ConvertTo-Json -Compress | Set-Content -LiteralPath $temp -Encoding utf8
         Move-Item -LiteralPath $temp -Destination $failure -Force
     } catch { } finally { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+}
+function Clear-LogonResume {
+    try {
+        $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
+        $value = Get-ItemPropertyValue -LiteralPath $key -Name 'CodexMeterPendingUpdate' -ErrorAction Stop
+        if ($value -and $value.IndexOf($targetPath,[StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            Remove-ItemProperty -LiteralPath $key -Name 'CodexMeterPendingUpdate' -ErrorAction SilentlyContinue
+        }
+    } catch { }
 }
 function Update-Shortcuts {
     $shell = New-Object -ComObject WScript.Shell
@@ -87,9 +97,11 @@ try {
     $backedUp = $true
     Move-WithRetry $payload $targetPath
     $installed = $true
-    if ($Relaunch -eq 1) {
+    if ($Relaunch -ne 0) {
         $marker = Join-Path $stagePath 'ready.json'
-        $newProcess = Start-Hidden $exe ('--start-hidden --update-ready "' + $marker + '"')
+        $startupArgs = '--update-ready "' + $marker + '"'
+        if ($Relaunch -eq 1) { $startupArgs = '--start-hidden ' + $startupArgs }
+        $newProcess = Start-Hidden $exe $startupArgs
         $deadline = [DateTime]::UtcNow.AddSeconds(30)
         $ready = $false
         while ([DateTime]::UtcNow -lt $deadline) {
@@ -112,16 +124,18 @@ try {
         }
     }
     try { Update-Shortcuts } catch { }
+    Clear-LogonResume
     $completed = $true
     Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
 } catch {
     Save-Failure
+    Clear-LogonResume
     if ($installed -and (Test-Path -LiteralPath $targetPath)) { Move-WithRetry $targetPath $failed }
     if ($backedUp -and (Test-Path -LiteralPath $backup) -and -not (Test-Path -LiteralPath $targetPath)) {
         Move-WithRetry $backup $targetPath
     }
-    if ($Relaunch -eq 1 -and (Test-Path -LiteralPath $exe -PathType Leaf)) {
-        try { Start-Hidden $exe '--start-hidden' | Out-Null } catch { }
+    if ($Relaunch -ne 0 -and (Test-Path -LiteralPath $exe -PathType Leaf)) {
+        try { Start-Hidden $exe $(if ($Relaunch -eq 1) {'--start-hidden'} else {'--restore-after-update'}) | Out-Null } catch { }
     }
     throw
 } finally {

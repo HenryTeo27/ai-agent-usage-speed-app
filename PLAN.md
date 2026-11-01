@@ -40,3 +40,11 @@ Only the latest snapshot and settings are retained, plus the working speed scrip
 - Check GitHub for a newer stable app release in the background. Verify its release digest and run a hidden startup check before installation.
 - Apply ready updates when the app is idle in the tray, or when the user quits. Keep settings and the latest snapshot. Restore the previous app if the replacement cannot start, and wait before retrying a failed update.
 - Keep development and portable runs separate from the installed app's updater. Test update downloads, path safety, retries and rollback with isolated files and hidden processes.
+
+## v1.1.5 repository migration and update recovery
+
+- Move the canonical repository to codex-meter. Keep the old repository and historical release assets as compatibility endpoints.
+- Preserve strict release URL, SHA-256 and startup checks for both repository addresses.
+- Check every 6 hours and during refresh after a 1-hour minimum.
+- Preserve the verified archive across restarts and recheck it locally before installation.
+- Resume pending updates before the next app window or once at Windows sign-in. Preserve explicit Quit behavior, settings and latest results.

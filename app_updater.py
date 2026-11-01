@@ -7,7 +7,8 @@ import subprocess
 import time
 from pathlib import Path
 
-REPO='HenryTeo27/ai-agent-usage-speed-app'
+REPO='HenryTeo27/codex-meter'
+LEGACY_REPO='HenryTeo27/ai-agent-usage-speed-app'
 API=f'https://api.github.com/repos/{REPO}/releases/latest'
 ARCHIVE='Codex-Meter-Windows-x64.zip'
 HOSTS={'api.github.com','github.com','release-assets.githubusercontent.com',
@@ -32,6 +33,24 @@ def installed_root(source_file,executable,frozen,data_dir):
     expected=(local/'Programs'/'CodexMeter').resolve()
     actual=(Path(executable).parent if frozen else Path(source_file).parent).resolve()
     return expected if actual==expected else None
+
+
+def configure_logon_resume(source_file,executable,frozen,data_dir,enabled):
+    """One pending update may resume at sign-in; this is not general autostart."""
+    if installed_root(source_file,executable,frozen,data_dir) is None: return
+    import winreg
+    key_path=r'Software\Microsoft\Windows\CurrentVersion\RunOnce'
+    try:
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER,key_path,0,winreg.KEY_SET_VALUE) as key:
+            if enabled:
+                command=[str(executable)]
+                if not frozen: command.append(str(source_file))
+                winreg.SetValueEx(key,'CodexMeterPendingUpdate',0,winreg.REG_SZ,
+                                 subprocess.list2cmdline(command+['--start-hidden']))
+            else:
+                try: winreg.DeleteValue(key,'CodexMeterPendingUpdate')
+                except FileNotFoundError: pass
+    except OSError: pass  # Next app launch still resumes from the saved archive.
 
 
 def check_url(url):
@@ -64,9 +83,10 @@ def release_candidate(metadata,current_version):
         raise ValueError('Release archive has no SHA-256 digest')
     size=asset.get('size')
     if type(size) is not int or not 0<size<=MAX_DOWNLOAD: raise ValueError('Invalid release archive size')
-    expected=f'https://github.com/{REPO}/releases/download/{tag}/{ARCHIVE}'
-    if asset.get('browser_download_url')!=expected: raise ValueError('Unexpected release archive URL')
-    return {'version':tag.removeprefix('v'),'url':expected,'sha256':digest[7:].lower(),'size':size}
+    allowed={f'https://github.com/{repo}/releases/download/{tag}/{ARCHIVE}' for repo in (REPO,LEGACY_REPO)}
+    url=asset.get('browser_download_url')
+    if url not in allowed: raise ValueError('Unexpected release archive URL')
+    return {'version':tag.removeprefix('v'),'url':url,'sha256':digest[7:].lower(),'size':size}
 
 
 def latest_release(current_version):
@@ -80,16 +100,23 @@ def remove_stage(stage,updates):
     if stage.parent!=updates or not re.fullmatch(r'update-[0-9a-f]{32}',stage.name):
         raise ValueError('Unexpected update staging directory')
     if stage.exists(): shutil.rmtree(stage)
+    manifest=updates/'ready-update.json'
+    try:
+        if Path(json.loads(manifest.read_text(encoding='utf-8-sig'))['stage']).resolve()==stage:
+            manifest.unlink(missing_ok=True)
+    except (OSError,ValueError,KeyError,TypeError): pass
 
 
 def clean_stale_stages(updates,now=None):
     updates=Path(updates)
     if not updates.is_dir(): return
     cutoff=(time.time() if now is None else now)-2*24*3600
+    try: active=Path(json.loads((updates/'ready-update.json').read_text(encoding='utf-8-sig'))['stage']).resolve()
+    except (OSError,ValueError,KeyError,TypeError): active=None
     for stage in updates.iterdir():
         if re.fullmatch(r'update-[0-9a-f]{32}',stage.name) and stage.is_dir():
             try:
-                if stage.stat().st_mtime<cutoff: remove_stage(stage,updates)
+                if stage.resolve()!=active and stage.stat().st_mtime<cutoff: remove_stage(stage,updates)
             except (OSError,ValueError): pass
 
 
@@ -103,6 +130,64 @@ def previous_failure(data_dir,current_version):
             return None
         return {'checked_at':checked,'version':value['version']}
     except (OSError,ValueError,KeyError,TypeError): return None
+
+
+def remember_ready(candidate,stage,data_dir):
+    import tempfile
+    updates=Path(data_dir)/'updates';path=updates/'ready-update.json'
+    temporary=None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',dir=updates,delete=False,suffix='.tmp') as stream:
+            temporary=Path(stream.name)
+            json.dump({'candidate':candidate,'stage':str(Path(stage).resolve())},stream)
+            stream.flush();os.fsync(stream.fileno())
+        os.replace(temporary,path)
+    finally:
+        if temporary is not None: temporary.unlink(missing_ok=True)
+
+
+def ready_update(data_dir,current_version):
+    updates=(Path(data_dir)/'updates').resolve();path=updates/'ready-update.json'
+    try:
+        value=json.loads(path.read_text(encoding='utf-8-sig'));candidate=value['candidate']
+        stage=Path(value['stage']).resolve()
+        if (stage.parent!=updates or not re.fullmatch(r'update-[0-9a-f]{32}',stage.name)
+                or version_tuple(candidate['version'])<=version_tuple(current_version)
+                or not (stage/ARCHIVE).is_file()):
+            path.unlink(missing_ok=True);return None
+        # Reuse the same strict metadata rules before trusting a persisted candidate.
+        release_candidate({'tag_name':'v'+candidate['version'],'assets':[{'name':ARCHIVE,
+            'size':candidate['size'],'digest':'sha256:'+candidate['sha256'],
+            'browser_download_url':candidate['url']}]},current_version)
+        return candidate,stage
+    except (OSError,ValueError,KeyError,TypeError): return None
+
+
+def resume_ready(data_dir,current_version,health_check,cancelled=lambda:False):
+    import hashlib
+    ready=ready_update(data_dir,current_version)
+    if ready is None: return None
+    candidate,stage=ready
+    try:
+        digest=hashlib.sha256();size=0
+        with (stage/ARCHIVE).open('rb') as stream:
+            for chunk in iter(lambda:stream.read(1024*1024),b''):
+                if cancelled(): raise RuntimeError('Update cancelled')
+                size+=len(chunk);digest.update(chunk)
+        if size!=candidate['size'] or digest.hexdigest()!=candidate['sha256']:
+            raise ValueError('Saved update checksum does not match')
+        payload=stage/'CodexMeter'
+        # This exact child is inside the already validated staging directory.
+        if payload.exists():
+            if payload.is_symlink() or payload.resolve().parent!=stage: raise ValueError('Unsafe saved payload')
+            shutil.rmtree(payload)
+        target=extract_bundle(stage/ARCHIVE,stage)
+        health_check(target/'CodexMeter.exe',candidate['version'],stage)
+        return candidate,stage
+    except Exception:
+        (Path(data_dir)/'updates'/'ready-update.json').unlink(missing_ok=True)
+        remove_stage(stage,Path(data_dir)/'updates')
+        raise
 
 
 def extract_bundle(archive,stage):
@@ -158,9 +243,10 @@ def download_and_stage(candidate,data_dir,health_check,cancelled=lambda:False):
         if size!=candidate['size'] or digest.hexdigest()!=candidate['sha256']:
             raise ValueError('Update checksum does not match the release')
         if cancelled(): raise RuntimeError('Update cancelled')
-        target=extract_bundle(archive,stage);archive.unlink()
+        target=extract_bundle(archive,stage)
         if cancelled(): raise RuntimeError('Update cancelled')
         health_check(target/'CodexMeter.exe',candidate['version'],stage)
+        remember_ready(candidate,stage,data_dir)
         return stage
     except Exception:
         try: remove_stage(stage,updates)

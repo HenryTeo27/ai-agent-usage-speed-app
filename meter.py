@@ -41,16 +41,16 @@ VENDOR = SPEED.parent / 'vendor'
 UPSTREAM = 'https://gist.githubusercontent.com/pszemraj/f8fe69ff5002c3bd0825edfd02001635/raw/codex_speed.py'
 CREATE = 0x08000000 if os.name == 'nt' else 0
 PYTHON = str(Path(sys.executable).with_name('python.exe')) if Path(sys.executable).name.lower() == 'pythonw.exe' else sys.executable
-VERSION = '1.1.4'
-REPOSITORY = 'https://github.com/HenryTeo27/ai-agent-usage-speed-app'
+VERSION = '1.1.5'
+REPOSITORY = 'https://github.com/HenryTeo27/codex-meter'
 CONTENT_PAD = 28
 SETTINGS_WRAP = 450
 INTERVALS = {'Manual':0, '30 minutes':0.5, '1 hour':1, '2 hours':2,
              '4 hours':4, '6 hours':6, '8 hours':8, '12 hours':12}
 DEFAULT = {'interval': 2, 'reserve': 600000000, 'appearance':'system'}
 DEADLINE_CHECK_MS = 60000
-APP_UPDATE_INTERVAL = 24*3600
-APP_UPDATE_RETRY = 6*3600
+APP_UPDATE_INTERVAL = 6*3600
+APP_UPDATE_RETRY = 3600
 APP_UPDATE_DEADLINE_CHECK = 3600
 CACHED_SPEED = DATA / 'tools' / 'codex_speed.py'
 
@@ -478,26 +478,42 @@ def get_speed(homes=None):
         return value[0],value[1]
 
 
-def get_app_update():
+def get_app_update(resume_only=False):
     # The worker releases networking and archive libraries when its check finishes.
     with tempfile.TemporaryDirectory(prefix='codex-meter-app-update-') as tmp:
-        return worker_call('--app-update',[],Path(tmp)/'result.json',750)
+        return worker_call('--resume-app-update' if resume_only else '--app-update',[],Path(tmp)/'result.json',90 if resume_only else 750)
 
 
-def app_update_worker():
+def app_update_worker(resume_only=False):
+    def health(executable,version,folder):
+        output=folder/'health.json'
+        run([str(executable),'--health-check','--worker-output',str(output)],timeout=45)
+        result=read(output,{})
+        if not result.get('ok') or result.get('value',{}).get('version')!=version:
+            raise RuntimeError('New app failed its startup check')
+        output.unlink(missing_ok=True)
+    ready=app_updater.resume_ready(DATA,VERSION,health,STOP_EVENT.is_set)
+    if ready:
+        candidate,stage=ready
+        return {'candidate':candidate,'stage':str(stage)}
+    if resume_only: return {'candidate':None,'stage':None}
     app_updater.clean_stale_stages(DATA/'updates')
-    candidate=app_updater.latest_release(VERSION)
-    stage=None
+    candidate=app_updater.latest_release(VERSION);stage=None
     if candidate:
-        def health(executable,version,folder):
-            output=folder/'health.json'
-            run([str(executable),'--health-check','--worker-output',str(output)],timeout=45)
-            result=read(output,{})
-            if not result.get('ok') or result.get('value',{}).get('version')!=version:
-                raise RuntimeError('New app failed its startup check')
-            output.unlink(missing_ok=True)
         stage=app_updater.download_and_stage(candidate,DATA,health,STOP_EVENT.is_set)
     return {'candidate':candidate,'stage':str(stage) if stage else None}
+
+
+def resume_app_update_before_window():
+    target=app_updater.installed_root(__file__,sys.executable,getattr(sys,'frozen',False),DATA)
+    if target is None or app_updater.ready_update(DATA,VERSION) is None: return False
+    try:
+        result=get_app_update(resume_only=True)
+        if not result['candidate']: return False
+        app_updater.start_installer(result['stage'],target,DATA,ROOT/'scripts/apply-update.ps1',
+                                   result['candidate']['version'],1 if '--start-hidden' in sys.argv else 2)
+        return True
+    except (OSError,ValueError,RuntimeError,KeyError,TypeError): return False
 
 
 def scan_speed(homes=None):
@@ -673,6 +689,8 @@ class App:
         self.setup_tray();self.schedule()
         self.publish_ready()
         self.signal_update_ready()
+        if app_updater.ready_update(DATA,VERSION) is None:
+            app_updater.configure_logon_resume(__file__,sys.executable,getattr(sys,'frozen',False),DATA,False)
         self.schedule_app_update_check()
         if '--start-hidden' not in sys.argv: self.show()
     def configure_window(self):
@@ -1217,6 +1235,7 @@ class App:
         else: self.schedule()
     def refresh(self):
         if self.busy: return
+        self.check_app_updates_on_activity()
         if self.job: self.root.after_cancel(self.job);self.job=None
         self.usage_baseline=dict(self.data['usage']) if 'usage' in self.data else None
         self.scan_homes=enabled_homes(settings=self.settings)
@@ -1327,6 +1346,8 @@ class App:
 
     def check_app_updates(self):
         if self.closed or self.app_update_running or self.pending_app_update is not None: return
+        if getattr(self,'app_update_job',None) is not None:
+            self.root.after_cancel(self.app_update_job);self.app_update_job=None
         self.app_update_running=True
         def work():
             try:
@@ -1338,6 +1359,13 @@ class App:
         threading.Thread(target=work,daemon=True).start()
         self.root.after(1000,self.poll_app_update)
 
+    def check_app_updates_on_activity(self):
+        if not getattr(self,'app_update_root',None): return
+        previous=self.data.get('app_update_check',{})
+        checked=previous.get('checked_at',0) if isinstance(previous,dict) else 0
+        if type(checked) not in (int,float) or not math.isfinite(checked): checked=0
+        if checked>time.time() or time.time()-checked>=3600: self.check_app_updates()
+
     def poll_app_update(self):
         if self.closed: return
         try: candidate,stage,error=self.app_update_results.get_nowait()
@@ -1346,6 +1374,7 @@ class App:
         self.app_update_running=False
         if candidate:
             self.pending_app_update=(candidate['version'],stage)
+            app_updater.configure_logon_resume(__file__,sys.executable,getattr(sys,'frozen',False),DATA,True)
             self.app_update_detail=f"App v{candidate['version']} is ready; installs automatically when hidden in the tray."
             self.maybe_apply_app_update()
             return
@@ -1466,7 +1495,7 @@ def worker_main():
     buffer=io.StringIO()
     try:
         if args[0]=='--limits': value=limits_worker()
-        elif args[0]=='--app-update': value=app_update_worker()
+        elif args[0] in ('--app-update','--resume-app-update'): value=app_update_worker(args[0]=='--resume-app-update')
         elif args[0]=='--health-check':
             import ssl
             ssl.create_default_context();load_gui()
@@ -1545,7 +1574,7 @@ def start_single_instance():
                     break
                 time.sleep(0.05)
         else:
-            App().run()
+            if not resume_app_update_before_window(): App().run()
     finally: kernel.CloseHandle(handle)
 
 

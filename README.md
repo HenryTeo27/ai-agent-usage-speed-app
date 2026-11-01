@@ -19,7 +19,7 @@ Windows [registry change notifications](https://learn.microsoft.com/en-us/window
 
 ## Quick install
 
-1. Download **[Codex-Meter-Windows-x64.zip](https://github.com/HenryTeo27/ai-agent-usage-speed-app/releases/latest/download/Codex-Meter-Windows-x64.zip)** from [Releases](https://github.com/HenryTeo27/ai-agent-usage-speed-app/releases/latest).
+1. Download **[Codex-Meter-Windows-x64.zip](https://github.com/HenryTeo27/codex-meter/releases/latest/download/Codex-Meter-Windows-x64.zip)** from [Releases](https://github.com/HenryTeo27/codex-meter/releases/latest).
 2. Extract the ZIP, then double-click **Install.cmd**. No administrator access or Python installation is needed.
 3. Open **Codex Meter** on your desktop. The installer also adds it to the Start menu.
 
@@ -38,27 +38,35 @@ Python and the speed tool's libraries are included in the release. codex-speed i
 - Hover over speed values for units and sample counts. Hover over the green token change for “Since Last Refresh” and the previous/current raw totals. Each successful usage response becomes the next baseline immediately, even while speed or account queries are pending. Manual and automatic refresh use the same baseline. A previous +150,000,000 followed by only 200,000 new tokens displays +200,000; the old increase is never added again.
 - Remaining allowance uses the original percentage labels. Monthly and all-time usage combine enabled local accounts. Token changes appear on separate GPT / API lines. The original 1-day and 14-day speed tables prefix each model with the same short account name. Settings lists local accounts with immediately saved on/off switches; off hides the source and skips it on future refreshes.
 - The 1-day speed table appears above the 14-day table. Settings ends with version and project details, without a provider list. There is no visible scrollbar on the main window.
-- The app does not start with Windows. Scheduled scans run while it is open or in the tray. Opening recent results shows the saved values immediately. Upgrading alone does not trigger a scan; scheduled refresh runs only when due.
+- The app does not normally start with Windows. A downloaded pending update may resume once at the next sign-in. Scheduled scans run while the app is open or in the tray. Opening recent results shows the saved values immediately. Upgrading alone does not trigger a scan; scheduled refresh runs only when due.
 
 ## Install with Codex or from source
 
 Ask your local coding agent:
 
-> Clone https://github.com/HenryTeo27/ai-agent-usage-speed-app and run install.ps1 on Windows. Check Python 3.10+ with Tk, Node.js 22+ and my signed-in Codex installation. Install dependencies and create the desktop shortcut.
+> Clone https://github.com/HenryTeo27/codex-meter and run install.ps1 on Windows. Check Python 3.10+ with Tk, Node.js 22+ and my signed-in Codex installation. Install dependencies and create the desktop shortcut.
 
-Or [download the source ZIP](https://github.com/HenryTeo27/ai-agent-usage-speed-app/archive/refs/heads/main.zip), extract it and double-click `Install.cmd`. Source installation needs Python 3.10+ with Tk; it can also use a supported Codex-bundled Python. It creates a private Python environment and installs `requirements.txt`.
+Or [download the source ZIP](https://github.com/HenryTeo27/codex-meter/archive/refs/heads/main.zip), extract it and double-click `Install.cmd`. Source installation needs Python 3.10+ with Tk; it can also use a supported Codex-bundled Python. It creates a private Python environment and installs `requirements.txt`.
 
 ```powershell
-git clone https://github.com/HenryTeo27/ai-agent-usage-speed-app.git
-cd ai-agent-usage-speed-app
+git clone https://github.com/HenryTeo27/codex-meter.git
+cd codex-meter
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 Both installers place the app in `%LOCALAPPDATA%\Programs\CodexMeter` and add desktop and Start menu shortcuts. To remove it, quit it and delete that folder and the two shortcuts. Settings and the latest snapshot are in `%LOCALAPPDATA%\CodexMeter`; delete that folder too if you want to reset everything.
 
+## Repository migration
+
+The main repository is now [HenryTeo27/codex-meter](https://github.com/HenryTeo27/codex-meter). The previous `HenryTeo27/ai-agent-usage-speed-app` repository remains as a compatibility endpoint for older installed apps and historical downloads. Its migration release moves existing installations to the new update address automatically. Issues and contributions belong in the main repository.
+
+For an existing source checkout, run `git remote set-url origin https://github.com/HenryTeo27/codex-meter.git`. The local folder name and installed app data path can stay the same.
+
 ## Automatic app updates
 
-An installed app checks this repository's latest stable GitHub release in the background, about once every 24 hours. A failed check retries after 6 hours. If a newer release is available, the app downloads it, checks the SHA-256 digest published by GitHub, and runs a hidden startup check. It saves your settings and snapshot before installing. The update does not interrupt a refresh or a visible window: once the window is hidden in the tray and the refresh is finished, it installs and restarts in the tray automatically. Quitting with a ready update installs it without reopening the app. The status tooltip shows update check errors or when an update is ready.
+An installed app checks for a stable release about every 6 hours. Refresh also checks when at least 1 hour has passed since the last check. A failed check retries after 1 hour. Downloads receive a SHA-256 check and a hidden startup check. Settings and the latest results are saved before installation. Once the window is hidden in the tray and its refresh finishes, the update installs and restarts in the tray. Quitting with a ready update installs it and leaves the app closed.
+
+The verified archive is saved until installation. If Windows restarts first, a one-time sign-in entry resumes the update and returns the app to the tray. Opening the app also installs a saved update before showing the window. No general Windows autostart is enabled. The status tooltip shows update errors or when an update is ready.
 
 If a replacement or the restarted app fails, the installer attempts to restore the previous version. The download is protected by HTTPS and the release digest, but releases are not code-signed. Source installations are converted to the packaged app during an automatic update; the desktop, Start menu and matching pinned shortcuts are updated. A development checkout or an executable run directly from an extracted ZIP does not update itself. Use the installer to enable updates.
 

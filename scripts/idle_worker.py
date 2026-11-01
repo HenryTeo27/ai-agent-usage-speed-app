@@ -10,6 +10,7 @@ meter.App.show=lambda app:None
 meter.App.setup_tray=lambda app:None  # Do not add an icon to the user's tray.
 meter.App.publish_ready=lambda app:None
 meter.app_updater.installed_root=lambda *args:Path(args[3])
+meter.app_updater.configure_logon_resume=lambda *args:None
 meter.save(meter.CONFIG,{'interval':2,'reserve':0,'appearance':'system'})
 row={'model':'gpt-example','normal':'20.0','fast':'30.0','ratio':'1.50×','normal_n':'8','fast_n':'9'}
 meter.save(meter.SNAPSHOT,{'usage':{'month_tokens':123,'total_tokens':456,'month_cost':1,'total_cost':2},
