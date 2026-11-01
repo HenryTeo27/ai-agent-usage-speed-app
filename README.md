@@ -1,3 +1,5 @@
+> **Compatibility repository.** Active development, issues and new releases are at [HenryTeo27/codex-meter](https://github.com/HenryTeo27/codex-meter). This repository preserves legacy update and download links.
+
 # Codex Meter
 
 A small Windows desktop meter for Codex usage and speed. Close it to the notification area and reopen it from the desktop shortcut.
