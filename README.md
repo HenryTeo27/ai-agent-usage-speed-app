@@ -1,13 +1,13 @@
 # Moved to Codex Meter
 
-**New users: [download Codex Meter from the main repository](https://github.com/HenryTeo27/codex-meter/releases/latest).**
+This repository is retired. It contains only this redirect notice in its current branch.
 
-The active project, Windows and macOS downloads, documentation, issues and contributions are at [HenryTeo27/codex-meter](https://github.com/HenryTeo27/codex-meter).
+## Download and documentation
 
-## Existing installations only
+**[Go to HenryTeo27/codex-meter](https://github.com/HenryTeo27/codex-meter)**
 
-This repository is an automatic migration endpoint for older installed versions. Their updater still uses this address. The migration update switches them to the main repository for future updates.
+- [Download the current Windows or macOS app](https://github.com/HenryTeo27/codex-meter/releases/latest)
+- [Read the installation and usage guide](https://github.com/HenryTeo27/codex-meter#readme)
+- [Report an issue or contribute](https://github.com/HenryTeo27/codex-meter/issues)
 
-Do not use this repository for a new installation. Historical installer releases are hidden. The remaining compatibility payload is retained for automatic updates, with its original filename, URL and checksum.
-
-GitHub public release assets cannot be restricted to updater clients. The migration payload remains publicly accessible so existing installations can reach it.
+No app installers, releases or migration updates are publicly distributed from this repository anymore. If an older installation still checks this address for updates, install the current version from the main repository once. Keep your existing settings and data folder.
